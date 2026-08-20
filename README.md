@@ -1,833 +1,173 @@
-````markdown
-# Billionaire Strategy Stock Market Trading Robot
+# Billionaire Alpaca Robot
 
-An algorithmic stock-trading system for **Alpaca** designed around multi-factor stock selection, technical analysis, market-regime detection, machine-learning-assisted scoring, adaptive parameters, automated risk controls, and continuous position management.
-
----
-
-## Overview
-
-The **Billionaire Strategy Stock Market Trading Robot — Version 10** is a Python-based automated trading system that continuously scans a large stock universe, ranks potential opportunities, applies multiple layers of confirmation and risk management, and manages open positions.
-
-The system combines:
-
-- Alpaca trading and market data
-- S&P 500 stock scanning
-- RSI, MACD, ATR, ADX, Bollinger Bands, stochastic and volume analysis
-- Market-regime detection
-- VIX-aware trading decisions
-- Risk-based position sizing
-- Hard ATR-based stop losses
-- Profit monitoring and scale-outs
-- Per-symbol performance monitoring
-- Historical backtesting
-- Adaptive parameter optimization
-- A shared TensorFlow sequence-model "brain"
-- Historical analog analysis
-- Bull-market strategy
-- Trade-governor safeguards
-- Real-time WebSocket dashboard
-- Emergency-stop and sell-all controls
-- Persistent trade and model state
-
-The bot's scanner operates in-process and ranks an S&P 500 candidate universe rather than relying on a separate stock-list generation process.
+An automated day-trading bot for Alpaca that runs a rules-based dip-buy scanner on the NASDAQ-100 + S&P 500 large caps, gated by a **four-brain neural committee** whose votes are debated live on a WebSocket dashboard.
 
 ---
 
-# Architecture
+## What it does
 
-```text
-                    ┌─────────────────────────┐
-                    │      Alpaca Account     │
-                    │ Positions / Cash / BP   │
-                    └────────────┬────────────┘
-                                 │
-                                 ▼
-                    ┌─────────────────────────┐
-                    │    Market Data Layer     │
-                    │ Alpaca IEX + yfinance   │
-                    └────────────┬────────────┘
-                                 │
-                                 ▼
-                    ┌─────────────────────────┐
-                    │     S&P 500 Scanner      │
-                    │ Technical + Fundamental  │
-                    │      Candidate Ranking   │
-                    └────────────┬────────────┘
-                                 │
-                                 ▼
-              ┌────────────────────────────────────┐
-              │         Trading Decision Layer      │
-              │                                    │
-              │ • Buy Score                         │
-              │ • Market Regime                     │
-              │ • ML Brain                          │
-              │ • Historical Analogs                │
-              │ • Backtest Brain                    │
-              │ • Per-Symbol Performance            │
-              │ • Trade Governor                    │
-              └────────────────┬───────────────────┘
-                               │
-                               ▼
-                    ┌─────────────────────────┐
-                    │    Risk / Position      │
-                    │       Sizing Layer      │
-                    └────────────┬────────────┘
-                                 │
-                                 ▼
-                    ┌─────────────────────────┐
-                    │      Alpaca Orders       │
-                    │     Buy / Sell / Stops   │
-                    └────────────┬────────────┘
-                                 │
-                                 ▼
-                    ┌─────────────────────────┐
-                    │     Position Manager     │
-                    │ Stops / TP / Scale-Out   │
-                    │      / Exit Logic        │
-                    └─────────────────────────┘
-
-                         ┌────────────────┐
-                         │ Web Dashboard   │
-                         │ WebSocket :8787 │
-                         └────────────────┘
-````
+- Scans a curated NASDAQ-100 + S&P 500 large-cap universe for dip-buy setups (RSI oversold, MACD bullish crossover, above 200-day SMA, multi-timeframe confirmation).
+- Detects the current market regime (bull / sideways / bear / panic) from SPY + VIX and adapts sizing, thresholds, and exit rules per regime.
+- Feeds every candidate through a committee of four brains that debate on a shared "Brain Trading Floor" before a Chair issues the final approve / deny decision.
+- Exits positions via a layered stack: **chandelier ATR trailing stop** (dynamic, volatility-adjusted) → **profit monitor** (peak-giveback fraction) → **scale-out stages** (fixed % milestones) → **hard stop** (2 × entry ATR).
+- Streams live state to a browser dashboard where you can pause, resume, sell-all, emergency-stop, adjust settings, and manage the two-tier blacklist.
 
 ---
 
-# Core Trading System
+## Architecture at a glance
 
-## Alpaca Integration
-
-The bot uses Alpaca for:
-
-* Account information
-* Buying power
-* Positions
-* Order submission
-* Order status
-* Current prices
-* Historical stock bars
-* Latest trade data
-
-The implementation uses both the legacy `alpaca_trade_api` trading client and `alpaca-py` for read-only market data. Alpaca's IEX feed is used as the primary source for supported daily stock data, with `yfinance` used as a fallback or for data types not available through that path.
-
-### Environment Variables
-
-Set the Alpaca credentials before starting the bot:
-
-```bash
-export APCA_API_KEY_ID="YOUR_ALPACA_API_KEY"
-export APCA_API_SECRET_KEY="YOUR_ALPACA_SECRET_KEY"
-export APCA_API_BASE_URL="YOUR_ALPACA_BASE_URL"
 ```
-
-For Alpaca paper trading, use the appropriate paper-trading API base URL.
-
----
-
-# Stock Scanner
-
-The integrated scanner evaluates an S&P 500 candidate universe and creates a ranked list of potential purchases.
-
-The scanner uses historical data and multiple technical measurements, including:
-
-* RSI
-* MACD
-* ATR
-* ADX
-* Bollinger Bands
-* Stochastic
-* Volume
-* Moving averages
-* VWAP-related measurements
-* Seasonal performance
-* Relative strength versus SPY
-* Historical price behavior
-
-The scanner configuration includes a 14-period RSI, 12/26/9 MACD configuration, 20-period Bollinger Bands, stochastic calculations, and a 14-period ADX.
-
-Relative strength versus SPY can provide an additional positive score adjustment when a stock is outperforming the benchmark.
-
----
-
-# Market-Regime Detection
-
-Before entering new positions, the robot evaluates the current market regime.
-
-The regime system influences:
-
-* Whether new positions are permitted
-* Buy-score thresholds
-* Strategy weighting
-* Bull-market strategy activation
-* Risk decisions
-
-The dashboard exposes the current regime, VIX value, and whether a weak bullish environment has been downgraded.
-
----
-
-# Bull-Market Strategy
-
-When the market regime qualifies as bullish, the robot can activate an additional bull-market buying path alongside the normal ranked strategy.
-
-The bull strategy requires multiple confirmations, including:
-
-* Short-term live price monitoring
-* Positive price movement
-* Daily MACD confirmation
-* RSI confirmation
-* Volume confirmation
-* A defined time-of-day trading window
-
-Bull candidates are merged with the normal candidate list and remain subject to the maximum number of new positions per cycle.
-
-Bull-market positions have their own exit behavior, including a flat profit target and a broker-side trailing stop.
-
----
-
-# Machine Learning Brain
-
-Version 10 contains a shared TensorFlow sequence-model brain.
-
-There is intentionally **one shared brain** rather than a separate neural network for every symbol.
-
-The model uses a rolling sequence of **20 daily feature snapshots** with **10 features per day**.
-
-## Model Architecture
-
-```text
-20 × 10 Daily Feature Sequence
-              │
-              ▼
-     Frozen Foundation
-              │
-       Dense(8, tanh)
-              │
-       Dense(6, tanh)
-              │
-              ▼
-      Conv1D(64, causal)
-              │
-       Batch Normalization
-              │
-          Dropout
-              │
-        LSTM(128)
-              │
-          Dropout
-              │
-        LSTM(64)
-              │
-          Dropout
-              │
-        Dense(32, ReLU)
-              │
-        Dense(1, Sigmoid)
-              │
-              ▼
-        Estimated Win Probability
-```
-
-The trainable portion uses a Conv1D → LSTM → LSTM → Dense architecture. The first two foundation layers are intentionally frozen so the learned model cannot completely overwrite the predefined technical-analysis foundation.
-
-## ML Features
-
-The model receives:
-
-1. RSI
-2. MACD
-3. MACD signal
-4. MACD-above-signal indicator
-5. ATR percentage
-6. Daily return
-7. Volume relative to SMA
-8. Distance from SMA20
-9. Distance from SMA50
-10. SMA20 > SMA50 indicator
-
-These features are constructed directly from the daily OHLCV data.
-
-## ML Guardrails
-
-The ML component is deliberately prevented from becoming the sole trading decision.
-
-The model:
-
-* Has a win-probability threshold
-* Requires sufficient live trade history before influencing live decisions
-* Has a maximum score adjustment
-* Can gracefully disable itself if TensorFlow is unavailable
-* Uses focal loss to emphasize difficult examples
-* Gives additional weight to losing examples
-
-The current configuration requires 60 live trades before the ML adjustment can affect live decisions and caps its score adjustment at ±1.5 points.
-
----
-
-# ML Training
-
-Historical pretraining uses daily market data.
-
-The current configuration includes:
-
-* 20-day sequence length
-* 10 features
-* 0.0006 learning rate
-* Focal-loss gamma of 1.2
-* Batch size of 64
-* 20,000-example historical pretraining lifetime cap
-* 15,000-example scheduled training runs
-* Daily maintenance training after the historical pretraining cap
-
-The model is scheduled around the trading day, with the normal training window beginning at **5:00 PM ET** and designed to finish before **7:45 AM ET**.
-
-TensorFlow is loaded lazily so that failure of the ML subsystem does not necessarily prevent the trading bot from operating. The program also detects NVIDIA CUDA availability and selects the appropriate TensorFlow package.
-
----
-
-# Historical Analog Analysis
-
-In addition to the neural-network model, the robot can search historical data for situations resembling the current market setup.
-
-Analog results can adjust the buy score when there is sufficient evidence.
-
-The analog system is intentionally bounded and does not act as an independent hard buy gate.
-
----
-
-# Backtest Brain
-
-The system contains an integrated historical backtesting subsystem.
-
-Backtests use the same major trading parameters used by the live system, including:
-
-* ATR hard stops
-* Profit-arm settings
-* Giveback settings
-* Scale-out stages
-* Risk per trade
-* Allocation limits
-* Buy-score threshold
-
-The backtest subsystem is configured for a two-year lookback and saves timestamped JSON reports to the `backtest_results` directory.
-
-Backtest reports include metrics such as:
-
-* Final portfolio value
-* Net P&L
-* Total return
-* Total trades
-* Wins
-* Losses
-* Win rate
-* Average winning trade
-* Average losing trade
-* Sharpe ratio
-* Maximum drawdown
-* SQN
-
-## Backtest Limitations
-
-The backtester uses daily bars rather than tick-by-tick market data.
-
-Therefore, it does not perfectly reproduce:
-
-* Intraday order sequencing
-* Actual order escalation
-* Live slippage
-* Cancel-before-sell behavior
-* Existing broker order interactions
-
-Backtest results should therefore be considered an approximation of live behavior rather than an exact simulation.
-
----
-
-# Risk Management
-
-Risk controls are applied before new positions are opened.
-
-Current configuration includes:
-
-```python
-ACCOUNT_MODE = 'margin'
-MAX_PORTFOLIO_EXPOSURE_PCT = 0.98
-MAX_LEVERAGE = 1.0
-RISK_PER_TRADE_PCT = 0.01
-MAX_ALLOCATION_PER_SYMBOL = 600.0
-MAX_NEW_POSITIONS_PER_CYCLE = 3
-MIN_ORDER_NOTIONAL = 1.00
-CASH_BUFFER = 1.00
-```
-
-Before buying, the bot checks:
-
-* Broker account status
-* Trading restrictions
-* Margin health
-* Portfolio exposure
-* Effective buying power
-* Cash buffer
-* Trade-governor state
-* Position limits
-* Per-symbol performance
-* Historical backtest veto
-* Candidate score
-
-If margin health falls below the configured maintenance floor, new purchases are suspended.
-
----
-
-# Position Sizing
-
-Position sizing is based on ATR-derived risk.
-
-The system calculates the risk per share using the same ATR multiplier used by the actual hard stop.
-
-```text
-Risk Amount
-     ÷
-Risk Per Share
-     =
-Position Size
-```
-
-The current configuration uses:
-
-```python
-RISK_PER_TRADE_PCT = 0.01
-HARD_STOP_ATR_MULTIPLIER = 2.0
-```
-
-The sizing calculation is aligned with the actual hard-stop distance rather than using a different theoretical stop distance.
-
----
-
-# Stop Loss and Exit System
-
-The robot uses several layers of exit protection.
-
-## Hard Stop
-
-The hard stop is ATR-based:
-
-```python
-USE_HARD_STOP_LOSS = True
-HARD_STOP_ATR_MULTIPLIER = 2.0
-HARD_STOP_MIN_PCT = 0.03
-```
-
-## Profit Monitoring
-
-The exit system can incorporate:
-
-* Profit targets
-* Peak tracking
-* Giveback protection
-* Scale-out stages
-* Hard stops
-* Trailing stops
-* Strategy-specific exits
-
-## Bull Strategy Exit
-
-Bull-market positions have a separate +0.5% flat target and their own 1% broker-side trailing stop.
-
----
-
-# Trade Governor
-
-The trade governor provides another layer of protection against uncontrolled trading.
-
-It monitors conditions such as:
-
-* Consecutive losses
-* Trading cooldowns
-* Daily profit locks
-* Whether trading is currently permitted
-
-The buy cycle checks the governor before creating new positions.
-
----
-
-# Per-Symbol Performance Mute
-
-The robot can temporarily mute symbols that have demonstrated poor performance in the bot's own trading history.
-
-This prevents the system from repeatedly trading a symbol that has become consistently unfavorable.
-
-The performance system evaluates:
-
-* Win rate
-* Net P&L
-* Number of trades
-
-and can skip muted symbols during candidate evaluation.
-
----
-
-# Score-Based Historical Expectancy
-
-The system can also analyze previous closed trades according to their buy score.
-
-When enough historical trades exist for a particular score level, the robot calculates the average historical outcome associated with that score.
-
-The current minimum sample size is 15 trades per score bucket.
-
-This allows the ranking system to become increasingly informed by the robot's own historical results.
-
----
-
-# Adaptive Parameters
-
-Version 10 includes an adaptive parameter subsystem.
-
-The adaptive system can automatically adjust selected live parameters, but only within defined guardrails.
-
-Controls include:
-
-* Minimum sample requirements
-* Maximum adjustment step sizes
-* Hard parameter bounds
-* Audit logging
-
-The main loop periodically runs the adaptive parameter pass alongside trade-history analysis and expectancy calculations.
-
----
-
-# Trading Loop
-
-The primary trading cycle operates approximately every **60 seconds**.
-
-During the main loop the system can:
-
-1. Analyze existing positions
-2. Evaluate new candidates
-3. Check account health
-4. Evaluate the market regime
-5. Rank candidates
-6. Apply ML adjustments
-7. Apply historical/analog analysis
-8. Apply risk controls
-9. Submit orders
-10. Manage exits
-11. Analyze trading history
-12. Run adaptive parameters
-13. Run scheduled ML training
-14. Run scheduled backtesting
-15. Wait for the next cycle
-
----
-
-# Real-Time Dashboard
-
-The repository includes a separate HTML dashboard:
-
-```text
-alpaca_dashboard.html
-```
-
-The dashboard provides a real-time view of the trading system.
-
-It displays:
-
-* Account equity
-* Buying power
-* Cash
-* Exposure
-* Effective buying power
-* Margin health
-* Market regime
-* VIX
-* Trade governor status
-* Consecutive losses
-* Cooldown
-* ML brain status
-* Brain trust
-* Open positions
-* Current prices
-* Gain/loss percentage
-* ATR
-* Chandelier stop
-* Recent trades
-* Muted symbols
-* Brain thinking log
-* System flags
-
----
-
-# Dashboard Controls
-
-The dashboard provides four operator controls.
-
-## Pause
-
-Stops new entries while allowing normal position-management logic to continue.
-
-## Resume
-
-Re-enables normal entry decisions.
-
-## Sell All
-
-Requests that all open positions be closed at market.
-
-## Emergency Stop
-
-Combines:
-
-* Pause new entries
-* Sell all positions
-
-The dashboard commands are implemented through WebSocket messages.
-
----
-
-# Dashboard WebSocket
-
-The trading robot runs a WebSocket server on:
-
-```text
-ws://127.0.0.1:8787
-```
-
-The default configuration binds to localhost:
-
-```python
-DASHBOARD_WS_HOST = '127.0.0.1'
-DASHBOARD_WS_PORT = 8787
-DASHBOARD_BROADCAST_INTERVAL_SECS = 1.0
-```
-
-The dashboard receives a state snapshot approximately once per second.
-
-The HTML dashboard automatically reconnects if the WebSocket connection is lost.
-
----
-
-# Project Structure
-
-A typical deployment can look like:
-
-```text
-billionaire-trading-bot/
-│
-├── billionaire-strategy-buy-lowest-price-stock-market-robot.py
-├── alpaca_dashboard.html
-│
-├── ml_brain_model/
-│   ├── model.keras
-│   ├── meta.json
-│   └── schedule_state.json
-│
-├── backtest_results/
-│   └── backtest_YYYYMMDD_HHMMSS.json
-│
-└── README.md
-```
-
-The ML model and metadata are stored under `ml_brain_model`.
-
----
-
-# Installation
-
-## 1. Clone the Repository
-
-```bash
-git clone https://github.com/YOUR_USERNAME/billionaire-trading-bot.git
-cd billionaire-trading-bot
-```
-
-## 2. Install Python
-
-Python 3.x is required.
-
-A virtual environment is recommended:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-Windows:
-
-```powershell
-python -m venv .venv
-.venv\Scripts\activate
-```
-
-## 3. Install Dependencies
-
-The bot contains an automatic dependency bootstrap system that checks installed packages and attempts to install missing dependencies at startup.
-
-The dependency list includes packages such as:
-
-```text
-alpaca-trade-api
-alpaca-py
-numpy
-TA-Lib
-yfinance
-SQLAlchemy
-ratelimit
-pandas-market-calendars
-pandas
-schedule
-websockets
-```
-
-You may also install dependencies manually if preferred.
-
----
-
-# Configure Alpaca
-
-Set:
-
-```bash
-export APCA_API_KEY_ID="YOUR_KEY"
-export APCA_API_SECRET_KEY="YOUR_SECRET"
-export APCA_API_BASE_URL="YOUR_BASE_URL"
-```
-
-Verify that the credentials have the appropriate permissions before starting the program.
-
----
-
-# Start the Robot
-
-```bash
-python billionaire-strategy-buy-lowest-price-stock-market-robot.py
-```
-
-The program will initialize its dependencies and trading components.
-
----
-
-# Start the Dashboard
-
-The dashboard HTML file can be served through any simple static HTTP server.
-
-For example:
-
-```bash
-python -m http.server 8080
-```
-
-Then open:
-
-```text
-http://127.0.0.1:8080/alpaca_dashboard.html
-```
-
-The dashboard connects to the trading bot's WebSocket endpoint:
-
-```text
-ws://127.0.0.1:8787
-```
-
-The dashboard itself does not provide the trading engine; it is an operator interface connected to the bot's WebSocket server.
-
----
-
-# Monitoring
-
-The dashboard provides real-time visibility into the system's internal state.
-
-Example monitoring areas:
-
-```text
-ACCOUNT
-├── Equity
-├── Buying Power
-├── Cash
-├── Exposure
-└── Margin Health
-
-MARKET
-├── Regime
-├── VIX
-└── Regime Downgrade
-
-GOVERNOR
-├── Can Trade
-├── Consecutive Losses
-├── Cooldown
-└── Day Lock
-
-BRAINS
-├── Backtest Mode
-├── ML Threshold
-├── Cached Symbols
-├── Chandelier Mode
-└── Brain Trust
-
-POSITIONS
-├── Average Price
-├── Current Price
-├── Gain %
-├── Entry ATR
-└── Chandelier Stop
-
-OPERATIONS
-├── Recent Trades
-├── Muted Symbols
-├── Thinking Log
-└── Emergency Flags
+                     ┌────────────────────────────────────────┐
+                     │   Rules scanner (dip-buy universe)     │
+                     └─────────────────┬──────────────────────┘
+                                       │ candidate symbol
+                                       ▼
+     ┌────────────────────────────────────────────────────────────────┐
+     │                    Brain Trading Floor debate                  │
+     │                                                                │
+     │   TRADING_A     BACKTEST_C     RISK_B        PORTFOLIO_D       │
+     │   (neural,      (5y sim,       (neural,      (neural,          │
+     │    P(win))       win-rate)      P(safe))      size×/aggr)      │
+     │        │             │             │             │             │
+     │        └─────────────┴──────┬──────┴─────────────┘             │
+     │                             ▼                                  │
+     │                     CHAIR (Brain E)                            │
+     │                aggregates votes, applies rules,                │
+     │                posts every vote + final decision               │
+     └─────────────────────────────┬──────────────────────────────────┘
+                                   │ APPROVE + adjusted notional
+                                   ▼
+                        Alpaca API: submit_order
+                                   │
+                                   ▼
+                            Position opens
+                                   │
+                                   ▼
+     ┌────────────────────────────────────────────────────────────────┐
+     │  Exit stack: Chandelier → Profit Monitor → Scale-out → Hard    │
+     └────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-# Current Risk Configuration
+## The four brains
 
-| Parameter                     | Current Configuration |
-| ----------------------------- | --------------------: |
-| Account mode                  |                Margin |
-| Maximum portfolio exposure    |                   98% |
-| Maximum leverage              |                  1.0× |
-| Risk per trade                |                    1% |
-| Maximum allocation / symbol   |                  $600 |
-| Maximum new positions / cycle |                     3 |
-| Minimum order                 |                    $1 |
-| Cash buffer                   |                    $1 |
-| Hard stop                     |               Enabled |
-| Hard stop ATR multiplier      |                  2.0× |
-| Hard stop minimum             |                    3% |
-| Bull-market target            |                 +0.5% |
-| Bull trailing stop            |                    1% |
+| Brain | Type | Answers | Authority |
+|---|---|---|---|
+| **A — Trading** | Neural net (Conv1D + LSTM on frozen expert foundation) | "Does this symbol look like a good buy right now?" | Advisory (nudges score) |
+| **B — Risk** | Neural net (12-feature Dense on frozen risk-detector foundation) | "Can the account safely take another position right now?" | Veto (armed mode) |
+| **C — Backtest** | Statistical (per-symbol 5-year replay of the buy signal under actual exit rules) | "Historically, does this signal make money on this symbol?" | Veto (armed by default) |
+| **D — Portfolio Manager** | Neural net (10-feature Dense on frozen PM heuristic foundation) | "Given recent trajectory, should we scale up, down, or hold neutral?" | Advisory (sizing nudges) |
+| **E — Chair** | Deterministic aggregator | Reads all votes, applies rules, issues final decision | Executes |
 
----
+**Brain A** is pretrained on 20,000 historical setups drawn from NASDAQ-100 + S&P 500 large caps, then fine-tuned continuously on the bot's own closed trades.
 
-# Performance Evaluation
+**Brain B and D** are pretrained on 20,000 synthetic scenarios that encode the ground-truth "safe / dangerous" (B) and "correct action" (D) rules. The head learns a smooth interpolation of the frozen foundation's expert detectors.
 
-The robot should be evaluated using more than raw win rate.
+**Brain C** is not a neural network — it's an honest statistical calculation. It walks 5 years of daily bars per symbol, replays the buy signal on each bar, simulates the outcome under the actual exit rules, and reports the historical win rate.
 
-Recommended metrics include:
-
-* Net P&L
-* Profit factor
-* Average win
-* Average loss
-* Expectancy
-* Maximum drawdown
-* Sharpe ratio
-* SQN
-* Number of trades
-* Win rate
-* Exposure
-* Return on capital
-* Performance by score
-* Performance by symbol
-* Performance by market regime
-
-The integrated backtesting system already records several of these metrics for historical evaluation.
+**Brain E (Chair)** is deterministic aggregation, not an LLM conversation. The floor discussion is a human-readable audit log of a math-based decision, not the mechanism by which the decision is reached.
 
 ---
 
-# Development Status
+## Safety layers (in order of trigger sensitivity)
 
-**Version:** 10
+1. **Broker/arithmetic checks** — buying power, cash buffer, exposure cap, margin health, PDT accounting. Cannot be overridden.
+2. **Trade Governor** — pauses new entries after N consecutive losses; locks the trading day once a profit target is hit.
+3. **Blacklist** — losing trades auto-add to a 72-hour temporary blacklist. Permanent blacklist for symbols you never want to trade.
+4. **Per-symbol mute** — statistical soft-mute for symbols with poor personal track record.
+5. **Chair vetoes** — Brain B (armed), Brain C (armed).
+6. **Chandelier ATR stop** — dynamic trailing stop, tightens as volatility drops.
+7. **Profit monitor** — peak-giveback fraction locks in profits after +0.5%.
+8. **Scale-out stages** — fixed milestones close position tranches.
+9. **Hard stop** — 2 × entry ATR from entry, the deep floor.
+
+---
+
+## Dashboard
+
+Real-time WebSocket dashboard at `ws://localhost:8765`. Open `alpaca_dashboard.html` in any browser to connect.
+
+**Tiles:**
+- 💰 Account (equity, buying power, cash, margin health)
+- 📈 Market Regime (regime, VIX, weak-bull downgrade flag)
+- 🛑 Trade Governor (can-trade, consecutive losses, cooldown, day-lock)
+- 🛡️ Risk Brain B (P(safe), min threshold, top risk features)
+- 💼 Portfolio Manager D (size ×, aggression, concentration ×, scale up/down tag)
+- 🧠 Brains (backtest mode + threshold, chandelier mode + ATR ×, brain trust scores)
+- 📊 Live Positions (per-symbol tiles with entry, live price, gain, chandelier stop)
+- 💎 Profit Monitor (per-symbol peak price, armed state, last seen)
+- 📋 Recent Trades (last 25 buys/sells)
+- 🧠 Brain Trading Floor (scrolling live debate feed + operator terminal)
+- ⏳ 72h Auto Blacklist (chips + add form)
+- 🚫 Permanent Blacklist (chips + confirm-to-add)
+- 🔇 Muted (auto) — statistical soft-mute list
+- ⚙️ Settings (14 dashboard-editable knobs, apply immediately)
+- 🤖 Robot Control (pause, resume, sell-all, emergency stop)
+
+**Operator terminal (bottom of Brain Trading Floor):**
+```
+status | pause | resume | sell_all | blacklist AAPL 72h | blacklist AAPL perm |
+unblacklist AAPL | clear | help
+```
+Arrow keys navigate command history.
+
+---
+
+## Files
+
+- `billionaire-strategy-buy-lowest-price-stock-market-robot.py` — main bot (~11,400 lines, single file by design)
+- `alpaca_dashboard.html` — dashboard client (~900 lines, no framework, pure HTML/CSS/JS)
+
+**State files** (auto-created under the bot's directory):
+- `ml_brain_model/` — Brain A weights + metadata
+- `brain_b_risk_model/` — Brain B weights + metadata
+- `brain_d_pm_model/` — Brain D weights + metadata
+- `persymbol_stats.json` — per-symbol win rate + P&L (survives restart)
+- `blacklist.json` — permanent + temporary blacklist entries
+
+---
+
+## First run
+
+1. Ensure Python packages install (bot's boot section auto-runs `pip install --quiet` for missing ones; requires `libta-lib` system library separately).
+2. Configure Alpaca API keys via environment variables the bot expects.
+3. Run: `python billionaire-strategy-buy-lowest-price-stock-market-robot.py`
+4. First-run pretraining runs three neural networks (Brain A: 20k historical setups, ~15–45 min depending on network + CPU; Brain B and D: 20k synthetic each, seconds).
+5. Once trading starts, open `alpaca_dashboard.html` in a browser to connect.
+
+---
+
+## Default configuration
+
+| Setting | Default | What it does |
+|---|---|---|
+| `CHANDELIER_MODE` | `armed` | Dynamic ATR trailing stop is active |
+| `CHANDELIER_ATR_MULT` | `3.0` | Chuck LeBeau's classic constant |
+| `BACKTEST_BRAIN_MODE` | `armed` | Backtest vetoes buys with poor historical win rate |
+| `BACKTEST_MIN_WIN_RATE` | `0.50` | Coin-flip threshold — blocks worse-than-random |
+| `BACKTEST_MIN_SAMPLES` | `20` | Below this, brain abstains (no veto) |
+| `BRAIN_B_MODE` | `shadow` | Risk brain observes only — flip to `armed` after review |
+| `BRAIN_B_MIN_SAFE` | `0.40` | Veto threshold when armed |
+| `BRAIN_D_MODE` | `shadow` | Portfolio manager observes only — flip to `armed` after review |
+| `CONSEC_LOSS_COOLDOWN` | `5` | Losses in a row before cooldown |
+| `COOLDOWN_SECONDS` | `1800` | 30-minute pause after loss streak |
+| `DAILY_PROFIT_LOCK_PCT` | `0.03` | +3% session gain locks the day |
+| `DASHBOARD_WS_PORT` | `8765` | Same port as the Kalshi bot — do not run both simultaneously |
+
+**All settings are live-editable from the dashboard's Settings tile** — no restart needed. Changes are applied to the running process.
+
+---
+
+## Design principles
+
+1. **Multiple safety layers, no single override.** Broker/arithmetic checks always run, regardless of what the brains say. A neural net bug can't bypass margin protection.
+2. **Neural nets are advisors, not black-box deciders.** Every brain prints its reasoning trail. Every trade decision is a debate on the floor with the Chair's vote visible.
+3. **New capabilities ship in shadow mode.** New neural brains default to observation-only. You watch them for a session, then flip to armed if the numbers look sane.
+4. **Rules-based scanning as the foundation.** The bot's core buy scanner is deterministic rules (RSI, MACD, SMA, multi-timeframe). Brains refine and gate; they don't originate signals.
+5. **Statistical, not aspirational.** Where a real calculation exists (backtest brain, per-symbol performance), it stays statistical. We don't wrap math in neural nets just to add symmetry.
+6. **proven patterns.** Several components (Blacklist, Trade Governor, Per-Symbol Performance, Brain Trust Tracker, Chandelier stop, Dashboard, Brain Trading Floor) are adapted from the sibling bot where they've been field-tested.
+
 
 **Primary language:** Python
 
