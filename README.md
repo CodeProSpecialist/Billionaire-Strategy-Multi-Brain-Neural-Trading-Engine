@@ -1,5 +1,3 @@
-Absolutely. Below is the **complete README**, with the warnings consolidated into **one short paragraph at the very bottom**, and the project licensed under **GNU General Public License v3.0 (GPL-3.0)**. GPLv3 is a copyleft free-software license published by the Free Software Foundation. ([GNU][1])
-
 ````markdown
 # Billionaire Strategy Stock Market Trading Robot
 
