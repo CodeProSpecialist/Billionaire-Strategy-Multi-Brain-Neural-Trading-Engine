@@ -128,13 +128,96 @@ Arrow keys navigate command history.
 
 ---
 
-## First run
+## Setup
 
-1. Ensure Python packages install (bot's boot section auto-runs `pip install --quiet` for missing ones; requires `libta-lib` system library separately).
-2. Configure Alpaca API keys via environment variables the bot expects.
-3. Run: `python billionaire-strategy-buy-lowest-price-stock-market-robot.py`
-4. First-run pretraining runs three neural networks (Brain A: 20k historical setups, ~15–45 min depending on network + CPU; Brain B and D: 20k synthetic each, seconds).
-5. Once trading starts, open `alpaca_dashboard.html` in a browser to connect.
+### 1. Alpaca API credentials (required)
+
+The bot reads three environment variables at startup:
+
+| Variable | Purpose | Where to get it |
+|---|---|---|
+| `APCA_API_KEY_ID` | Alpaca API key ID | [alpaca.markets](https://alpaca.markets) → Account → API Keys |
+| `APCA_API_SECRET_KEY` | Alpaca API secret key | Same page (shown once when key is generated) |
+| `APCA_API_BASE_URL` | API endpoint | `https://paper-api.alpaca.markets` for paper trading, `https://api.alpaca.markets` for live |
+
+### 2. Add them to `~/.bashrc` (Linux/macOS)
+
+Open your `~/.bashrc` in an editor:
+
+```bash
+nano ~/.bashrc
+```
+
+Append these lines to the bottom of the file (replace the placeholder values with your real credentials):
+
+```bash
+# ─── Alpaca API credentials for the Billionaire Robot ─────────────
+export APCA_API_KEY_ID="PK_YOUR_KEY_ID_HERE"
+export APCA_API_SECRET_KEY="YOUR_SECRET_KEY_HERE"
+export APCA_API_BASE_URL="https://paper-api.alpaca.markets"
+```
+
+Save and exit (`Ctrl-O`, `Enter`, `Ctrl-X` in nano).
+
+Reload your current shell so the new variables take effect:
+
+```bash
+source ~/.bashrc
+```
+
+Verify they're set:
+
+```bash
+echo $APCA_API_KEY_ID
+echo $APCA_API_BASE_URL
+```
+
+Both should print the values you set. `APCA_API_SECRET_KEY` will also print if you check it, but treat that value like a password — don't paste it into terminals other people can see.
+
+**Security tips:**
+- `chmod 600 ~/.bashrc` restricts read access to just your user.
+- Never commit `~/.bashrc` or any file containing these values to git.
+- Start with `paper-api.alpaca.markets`. Only switch to `api.alpaca.markets` (live money) after you've watched the bot run for several sessions and understand its behavior.
+
+### 3. System dependencies
+
+The bot's auto-bootstrap installs Python packages via `pip install --quiet` for anything missing, but **TA-Lib requires the system C library** which pip can't install:
+
+```bash
+# Debian/Ubuntu
+sudo apt-get install build-essential wget
+wget https://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
+tar -xvzf ta-lib-0.4.0-src.tar.gz
+cd ta-lib/
+./configure --prefix=/usr
+make
+sudo make install
+
+# macOS (Homebrew)
+brew install ta-lib
+```
+
+### 4. First run
+
+```bash
+python billionaire-strategy-buy-lowest-price-stock-market-robot.py
+```
+
+First-run behavior:
+- Bootstrap installs any missing Python packages (a few seconds to a minute).
+- **Brain A pretrains on 20,000 historical setups** — takes 15–45 minutes depending on network speed and CPU. Fetches ~5 years of daily bars for ~160 tickers, generates 20k labeled sequences, trains 6 epochs.
+- **Brain B and D pretrain on 20,000 synthetic scenarios each** — seconds on CPU.
+- Once pretraining completes, the trading loop starts.
+
+Subsequent runs skip all pretraining (models load from disk instantly).
+
+### 5. Connect the dashboard
+
+Once the bot is running, open `alpaca_dashboard.html` in any browser. It auto-connects to `ws://localhost:8765` and auto-reconnects on drop.
+
+If running the bot on a remote server, either:
+- Use SSH port forwarding: `ssh -L 8765:localhost:8765 you@server`
+- Or change `DASHBOARD_WS_HOST` from `'127.0.0.1'` to `'0.0.0.0'` in the bot source (⚠️ then anyone on your network can reach the dashboard — no authentication is built in).
 
 ---
 
@@ -153,7 +236,7 @@ Arrow keys navigate command history.
 | `CONSEC_LOSS_COOLDOWN` | `5` | Losses in a row before cooldown |
 | `COOLDOWN_SECONDS` | `1800` | 30-minute pause after loss streak |
 | `DAILY_PROFIT_LOCK_PCT` | `0.03` | +3% session gain locks the day |
-| `DASHBOARD_WS_PORT` | `8765` | Same port as the Kalshi bot — do not run both simultaneously |
+| `DASHBOARD_WS_PORT` | `8765` | WebSocket port for the dashboard |
 
 **All settings are live-editable from the dashboard's Settings tile** — no restart needed. Changes are applied to the running process.
 
@@ -166,46 +249,6 @@ Arrow keys navigate command history.
 3. **New capabilities ship in shadow mode.** New neural brains default to observation-only. You watch them for a session, then flip to armed if the numbers look sane.
 4. **Rules-based scanning as the foundation.** The bot's core buy scanner is deterministic rules (RSI, MACD, SMA, multi-timeframe). Brains refine and gate; they don't originate signals.
 5. **Statistical, not aspirational.** Where a real calculation exists (backtest brain, per-symbol performance), it stays statistical. We don't wrap math in neural nets just to add symmetry.
-6. **proven patterns.** Several components (Blacklist, Trade Governor, Per-Symbol Performance, Brain Trust Tracker, Chandelier stop, Dashboard, Brain Trading Floor) are adapted from the sibling bot where they've been field-tested.
-
-
-**Primary language:** Python
-
-**Broker:** Alpaca
-
-**Market:** U.S. equities
-
-**Primary candidate universe:** S&P 500
-
-**Machine learning:** TensorFlow
-
-**Technical analysis:** TA-Lib
-
-**Historical data:** Alpaca IEX + yfinance fallback
-
-**Dashboard:** HTML + WebSocket
-
-**Backtesting:** Integrated scheduled backtesting subsystem
-
----
-
-# Contributing
-
-Contributions, bug reports, strategy improvements, testing results, and performance-analysis tools are welcome.
-
-When submitting changes to trading logic, include:
-
-* The reason for the change
-* The affected strategy component
-* Backtest results where applicable
-* Risk implications
-* Any changes to position sizing
-* Any changes to exit behavior
-* Any new dependencies
-
-For trading-strategy changes, avoid making claims of profitability without reproducible evidence.
-
----
 
 # License
 
