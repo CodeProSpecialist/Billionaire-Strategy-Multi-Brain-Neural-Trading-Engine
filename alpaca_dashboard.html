@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Billionaire Trading Bot — Dashboard</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161a22; --panel-hi: #1c2130;
+    --fg: #e6e9ef; --fg2: #9aa4b2; --fg3: #6b7484;
+    --green: #3ec46d; --red: #ef5a5a; --amber: #f0b429; --blue: #58a6ff;
+    --border: #2a3040;
+    --mono: 'Menlo', 'Consolas', 'Monaco', monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 12px; background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 13px;
+  }
+  h1 { margin: 0 0 12px 0; font-size: 18px; font-weight: 500;
+       display: flex; align-items: center; gap: 12px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--red); }
+  .dot.on { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .grid {
+    display: grid; gap: 10px;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 6px; padding: 12px;
+  }
+  .panel h2 {
+    margin: 0 0 8px 0; font-size: 12px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg2);
+    border-bottom: 1px solid var(--border); padding-bottom: 6px;
+  }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
+  .kv .k { color: var(--fg3); }
+  .kv .v { font-family: var(--mono); text-align: right; }
+  .green { color: var(--green); }
+  .red   { color: var(--red);   }
+  .amber { color: var(--amber); }
+  .blue  { color: var(--blue);  }
+  .mono  { font-family: var(--mono); }
+  table {
+    width: 100%; border-collapse: collapse; font-family: var(--mono);
+    font-size: 12px;
+  }
+  th, td {
+    text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  th { color: var(--fg3); font-weight: 500; font-size: 11px;
+       text-transform: uppercase; letter-spacing: 0.04em; }
+  td.right, th.right { text-align: right; }
+  .btn {
+    background: var(--panel-hi); color: var(--fg); border: 1px solid var(--border);
+    padding: 6px 12px; font-size: 12px; border-radius: 4px; cursor: pointer;
+    font-family: inherit;
+  }
+  .btn:hover { background: #232a3d; }
+  .btn.red    { border-color: var(--red);   color: var(--red);   }
+  .btn.green  { border-color: var(--green); color: var(--green); }
+  .btn.amber  { border-color: var(--amber); color: var(--amber); }
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .think-line {
+    padding: 4px 6px; border-bottom: 1px solid var(--border);
+    font-family: var(--mono); font-size: 11px; line-height: 1.5;
+  }
+  .think-line .sym { color: var(--blue); font-weight: bold; }
+  .think-line .side-BUY  { color: var(--green); }
+  .think-line .side-SELL { color: var(--amber); }
+  .think-line .verdict-LEAN { color: var(--fg); }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 10px;
+    font-size: 10px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .badge.on  { background: rgba(62, 196, 109, 0.15); color: var(--green); }
+  .badge.off { background: rgba(239, 90, 90, 0.15);  color: var(--red);   }
+  .badge.warn{ background: rgba(240, 180, 41, 0.15); color: var(--amber); }
+  .scroll { max-height: 340px; overflow-y: auto; }
+  .footer {
+    margin-top: 12px; text-align: center; color: var(--fg3); font-size: 11px;
+    font-family: var(--mono);
+  }
+  .full-row { grid-column: 1 / -1; }
+</style>
+</head>
+<body>
+
+<h1>
+  <span id="conn-dot" class="dot"></span>
+  Billionaire Trading Bot
+  <span id="conn-txt" style="color:var(--fg3);font-size:12px;">disconnected</span>
+</h1>
+
+<div class="grid">
+
+  <!-- Account -->
+  <div class="panel">
+    <h2>Account</h2>
+    <div class="kv" id="account-kv">
+      <div class="k">Equity</div><div class="v" id="a-equity">—</div>
+      <div class="k">Buying Power</div><div class="v" id="a-bp">—</div>
+      <div class="k">Cash</div><div class="v" id="a-cash">—</div>
+      <div class="k">Exposure</div><div class="v" id="a-exposure">—</div>
+      <div class="k">Effective BP</div><div class="v" id="a-effbp">—</div>
+      <div class="k">Margin Health</div><div class="v" id="a-mh">—</div>
+    </div>
+  </div>
+
+  <!-- Regime -->
+  <div class="panel">
+    <h2>Market Regime</h2>
+    <div class="kv">
+      <div class="k">Regime</div><div class="v" id="r-regime">—</div>
+      <div class="k">VIX</div><div class="v" id="r-vix">—</div>
+      <div class="k">Downgraded</div><div class="v" id="r-dg">—</div>
+    </div>
+  </div>
+
+  <!-- Governor -->
+  <div class="panel">
+    <h2>Trade Governor</h2>
+    <div class="kv">
+      <div class="k">Can Trade</div><div class="v" id="g-can">—</div>
+      <div class="k">Consec. Losses</div><div class="v" id="g-losses">—</div>
+      <div class="k">Cooldown</div><div class="v" id="g-cool">—</div>
+      <div class="k">Day Locked</div><div class="v" id="g-locked">—</div>
+      <div class="k">Reason</div><div class="v" id="g-reason">—</div>
+    </div>
+  </div>
+
+  <!-- Brains -->
+  <div class="panel">
+    <h2>Brains</h2>
+    <div class="kv">
+      <div class="k">Backtest Mode</div><div class="v" id="b-mode">—</div>
+      <div class="k">Threshold</div><div class="v" id="b-thresh">—</div>
+      <div class="k">Cached Symbols</div><div class="v" id="b-cached">—</div>
+      <div class="k">Chandelier Mode</div><div class="v" id="c-mode">—</div>
+      <div class="k">Chandelier ATR×</div><div class="v" id="c-mult">—</div>
+    </div>
+    <h2 style="margin-top:12px;">Brain Trust</h2>
+    <table id="brain-trust-tbl">
+      <thead><tr><th>Brain</th><th class="right">Trust</th><th class="right">N</th><th class="right">State</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- Positions -->
+  <div class="panel full-row">
+    <h2>Positions <span id="pos-count" style="color:var(--fg3);font-weight:normal;">(0)</span></h2>
+    <table id="pos-tbl">
+      <thead>
+        <tr>
+          <th>Symbol</th>
+          <th class="right">Avg Price</th>
+          <th class="right">Current</th>
+          <th class="right">Gain %</th>
+          <th class="right">Entry ATR</th>
+          <th class="right">Chandelier Stop</th>
+          <th>Purchased</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- Recent trades -->
+  <div class="panel">
+    <h2>Recent Trades</h2>
+    <div class="scroll">
+      <table id="trades-tbl">
+        <thead>
+          <tr>
+            <th>Symbol</th><th>Side</th>
+            <th class="right">Qty</th><th class="right">Price</th><th>Date</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Muted symbols -->
+  <div class="panel">
+    <h2>Muted Symbols</h2>
+    <div class="scroll">
+      <table id="muted-tbl">
+        <thead>
+          <tr>
+            <th>Symbol</th>
+            <th class="right">Win %</th>
+            <th class="right">P&L</th>
+            <th class="right">N</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div id="muted-empty" style="color:var(--fg3);text-align:center;padding:12px;">
+        No symbols currently muted
+      </div>
+    </div>
+  </div>
+
+  <!-- Thinking log -->
+  <div class="panel full-row">
+    <h2>Brain Thinking Log</h2>
+    <div class="scroll" id="think-log"></div>
+  </div>
+
+  <!-- Controls -->
+  <div class="panel full-row">
+    <h2>Controls</h2>
+    <div class="btn-row">
+      <button class="btn amber" onclick="doPause()">Pause (no new entries)</button>
+      <button class="btn green" onclick="doResume()">Resume</button>
+      <button class="btn red" onclick="doSellAll()">Sell All (confirm)</button>
+      <button class="btn red" onclick="doEmergencyStop()">EMERGENCY STOP</button>
+    </div>
+    <div id="flags" style="margin-top:8px;color:var(--fg3);font-size:11px;"></div>
+  </div>
+
+</div>
+
+<div class="footer" id="footer">Last update: never</div>
+
+<script>
+// ─── WebSocket connection ────────────────────────────────────────
+const WS_URL = 'ws://' + (location.hostname || '127.0.0.1') + ':8787';
+let ws = null;
+let reconnectTimer = null;
+
+function connect() {
+  if (ws) { try { ws.close(); } catch(e){} }
+  document.getElementById('conn-txt').textContent = 'connecting…';
+  ws = new WebSocket(WS_URL);
+  ws.onopen = () => {
+    document.getElementById('conn-dot').classList.add('on');
+    document.getElementById('conn-txt').textContent = 'connected';
+  };
+  ws.onclose = () => {
+    document.getElementById('conn-dot').classList.remove('on');
+    document.getElementById('conn-txt').textContent = 'disconnected — retrying…';
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, 3000);
+  };
+  ws.onerror = () => { /* onclose will handle reconnection */ };
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'state') render(msg);
+    } catch(err) { console.error('bad message', err); }
+  };
+}
+
+function send(obj) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+  else alert('Not connected to bot');
+}
+
+// ─── Command buttons ────────────────────────────────────────────
+function doPause() { send({type: 'robot_pause'}); }
+function doResume() { send({type: 'robot_resume'}); }
+function doSellAll() {
+  if (!confirm('Sell ALL open positions at market price?\n\nThis cannot be undone.')) return;
+  send({type: 'sell_all'});
+}
+function doEmergencyStop() {
+  if (!confirm('EMERGENCY STOP:\n• Pause all new entries\n• Sell all positions at market\n\nProceed?')) return;
+  send({type: 'emergency_stop'});
+}
+
+// ─── Formatters ─────────────────────────────────────────────────
+const fmt = {
+  usd: (v) => v == null ? '—' : '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}),
+  pct: (v) => v == null ? '—' : (v * 100).toFixed(2) + '%',
+  num: (v, d=2) => v == null ? '—' : Number(v).toFixed(d),
+  time: (ts) => {
+    const d = new Date(ts * 1000);
+    return d.toLocaleTimeString('en-US', {hour12: false});
+  },
+};
+function pnlClass(v) {
+  if (v == null || isNaN(v)) return '';
+  return v >= 0 ? 'green' : 'red';
+}
+function pnlSign(v) {
+  return (v >= 0 ? '+' : '') + (v * 100).toFixed(2) + '%';
+}
+
+// ─── Renderers ──────────────────────────────────────────────────
+function render(s) {
+  renderAccount(s.account);
+  renderRegime(s.regime);
+  renderGovernor(s.governor);
+  renderBrains(s.backtest_brain, s.chandelier, s.brain_trust);
+  renderPositions(s.positions);
+  renderTrades(s.recent_trades);
+  renderMuted(s.muted_symbols);
+  renderThinking(s.thinking_log);
+  renderFlags(s.flags);
+  document.getElementById('footer').textContent =
+      'Last update: ' + fmt.time(s.ts);
+}
+
+function renderAccount(a) {
+  if (!a || a.error) return;
+  document.getElementById('a-equity').textContent   = fmt.usd(a.equity);
+  document.getElementById('a-bp').textContent       = fmt.usd(a.buying_power);
+  document.getElementById('a-cash').textContent     = fmt.usd(a.cash);
+  document.getElementById('a-exposure').textContent = fmt.usd(a.exposure);
+  document.getElementById('a-effbp').textContent    = fmt.usd(a.effective_bp);
+  const mh = document.getElementById('a-mh');
+  mh.textContent = fmt.num(a.margin_ratio, 2) + (a.healthy ? ' ✓' : ' ⚠');
+  mh.className = 'v ' + (a.healthy ? 'green' : 'red');
+}
+
+function renderRegime(r) {
+  if (!r || r.error) return;
+  const rr = document.getElementById('r-regime');
+  rr.textContent = (r.regime || '?').toUpperCase();
+  rr.className = 'v ' + (r.regime === 'bull' ? 'green' :
+                        r.regime === 'bear' ? 'red' :
+                        r.regime === 'panic' ? 'red' : 'amber');
+  document.getElementById('r-vix').textContent = fmt.num(r.vix, 1);
+  const dg = document.getElementById('r-dg');
+  dg.textContent = r.weak_bull_downgraded ? 'YES (weak bull)' : 'no';
+  dg.className = 'v ' + (r.weak_bull_downgraded ? 'amber' : '');
+}
+
+function renderGovernor(g) {
+  if (!g || g.error) return;
+  const can = document.getElementById('g-can');
+  can.textContent = g.can_trade ? 'YES' : 'NO';
+  can.className = 'v ' + (g.can_trade ? 'green' : 'red');
+  document.getElementById('g-losses').textContent = g.consec_losses;
+  document.getElementById('g-cool').textContent = g.in_cooldown ? 'active' : 'none';
+  document.getElementById('g-cool').className = 'v ' + (g.in_cooldown ? 'amber' : '');
+  document.getElementById('g-locked').textContent = g.day_locked ? 'LOCKED' : 'no';
+  document.getElementById('g-locked').className = 'v ' + (g.day_locked ? 'red' : '');
+  document.getElementById('g-reason').textContent = g.reason || '—';
+}
+
+function renderBrains(b, c, t) {
+  if (b && !b.error) {
+    document.getElementById('b-mode').textContent = b.mode;
+    document.getElementById('b-mode').className = 'v ' + (b.mode === 'armed' ? 'green' : 'amber');
+    document.getElementById('b-thresh').textContent = fmt.pct(b.threshold);
+    document.getElementById('b-cached').textContent = b.cached_symbols;
+  }
+  if (c) {
+    document.getElementById('c-mode').textContent = c.mode;
+    document.getElementById('c-mode').className = 'v ' + (c.mode === 'armed' ? 'green' :
+                                                          c.mode === 'off' ? 'red' : 'amber');
+    document.getElementById('c-mult').textContent = fmt.num(c.atr_mult, 1) + '×';
+  }
+  const tbody = document.querySelector('#brain-trust-tbl tbody');
+  tbody.innerHTML = '';
+  if (t && !t.error) {
+    for (const [name, info] of Object.entries(t)) {
+      const state = info.hot ? '<span class="green">HOT</span>' :
+                    info.cold ? '<span class="red">COLD</span>' :
+                    '<span style="color:var(--fg3)">neutral</span>';
+      tbody.innerHTML += `<tr>
+        <td>${name}</td>
+        <td class="right">${fmt.num(info.trust, 2)}</td>
+        <td class="right">${info.n_predictions}</td>
+        <td class="right">${state}</td></tr>`;
+    }
+  }
+}
+
+function renderPositions(p) {
+  const tbody = document.querySelector('#pos-tbl tbody');
+  tbody.innerHTML = '';
+  document.getElementById('pos-count').textContent = '(' + (p ? p.length : 0) + ')';
+  if (!p || !p.length) return;
+  for (const pos of p) {
+    if (pos.error) continue;
+    tbody.innerHTML += `<tr>
+      <td><b>${pos.symbol}</b></td>
+      <td class="right">${fmt.usd(pos.avg_price)}</td>
+      <td class="right">${fmt.usd(pos.current_price)}</td>
+      <td class="right ${pnlClass(pos.gain_pct)}">${pnlSign(pos.gain_pct)}</td>
+      <td class="right">${pos.entry_atr ? fmt.num(pos.entry_atr, 2) : '—'}</td>
+      <td class="right">${pos.chandelier_stop ? fmt.usd(pos.chandelier_stop) : '—'}</td>
+      <td>${pos.purchase_date || '—'}</td>
+    </tr>`;
+  }
+}
+
+function renderTrades(t) {
+  const tbody = document.querySelector('#trades-tbl tbody');
+  tbody.innerHTML = '';
+  if (!t) return;
+  // reverse so newest is on top
+  const rev = t.slice().reverse();
+  for (const tr of rev) {
+    if (tr.error) continue;
+    const sideClass = tr.action === 'buy' ? 'green' : 'red';
+    tbody.innerHTML += `<tr>
+      <td><b>${tr.symbol}</b></td>
+      <td class="${sideClass}">${(tr.action||'').toUpperCase()}</td>
+      <td class="right">${fmt.num(tr.qty, 4)}</td>
+      <td class="right">${fmt.usd(tr.price)}</td>
+      <td>${tr.date}</td></tr>`;
+  }
+}
+
+function renderMuted(m) {
+  const tbody = document.querySelector('#muted-tbl tbody');
+  const empty = document.getElementById('muted-empty');
+  tbody.innerHTML = '';
+  if (!m || !m.length) {
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+  for (const mm of m) {
+    if (mm.error) continue;
+    tbody.innerHTML += `<tr>
+      <td><b>${mm.symbol}</b></td>
+      <td class="right red">${(mm.win_rate * 100).toFixed(0)}%</td>
+      <td class="right red">${fmt.usd(mm.pnl)}</td>
+      <td class="right">${mm.n}</td></tr>`;
+  }
+}
+
+function renderThinking(lines) {
+  const box = document.getElementById('think-log');
+  if (!lines || !lines.length) {
+    box.innerHTML = '<div style="color:var(--fg3);text-align:center;padding:12px;">No brain thinking yet.</div>';
+    return;
+  }
+  // newest first
+  const rev = lines.slice().reverse();
+  box.innerHTML = rev.map(l => {
+    const p = l.prob != null ? (l.prob * 100).toFixed(1) + '%' : '—';
+    const adj = l.adj != null ? (l.adj >= 0 ? '+' : '') + l.adj.toFixed(2) : '';
+    return `<div class="think-line">
+      <span style="color:var(--fg3);">${fmt.time(l.ts)}</span>
+      <span class="side-${l.side}">[${l.side}]</span>
+      <span class="sym">${l.symbol}</span>
+      P(win)=${p} → <b>${l.verdict}</b>
+      <span style="color:var(--fg3);">${adj}</span>
+    </div>`;
+  }).join('');
+}
+
+function renderFlags(f) {
+  if (!f) return;
+  const bits = [];
+  if (f.paused) bits.push('<span class="badge warn">PAUSED</span>');
+  if (f.emergency_stop) bits.push('<span class="badge off">EMERGENCY STOP</span>');
+  if (f.sell_all_pending) bits.push('<span class="badge warn">SELL-ALL PENDING</span>');
+  document.getElementById('flags').innerHTML = bits.length ? bits.join(' ') : 'no flags active';
+}
+
+// ─── boot ──────────────────────────────────────────────────────
+connect();
+</script>
+</body>
+</html>
