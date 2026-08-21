@@ -89,17 +89,25 @@ tensorflow *
 
 \* TensorFlow is optional but recommended. Without it, all six brains degrade gracefully — the rule-based signal still trades, dashboards still work. With it, the bot auto-detects an NVIDIA GPU and swaps in the CPU / GPU wheel accordingly, restarting once if the wheel changed.
 
-**TA-Lib** requires the system C library. On Debian/Ubuntu:
-
-```bash
-sudo apt-get install libta-lib-dev
-```
-
-macOS:
+**TA-Lib** needs the C library. macOS is easy:
 
 ```bash
 brew install ta-lib
 ```
+
+On Debian/Ubuntu there is no distro package — build from source:
+
+```bash
+sudo apt-get install build-essential wget
+wget https://github.com/ta-lib/ta-lib/releases/download/v0.6.4/ta-lib-0.6.4-src.tar.gz
+tar -xzf ta-lib-0.6.4-src.tar.gz
+cd ta-lib-0.6.4
+./configure --prefix=/usr
+make
+sudo make install
+```
+
+(Check https://github.com/ta-lib/ta-lib/releases for the latest version.)
 
 ---
 
@@ -241,6 +249,7 @@ Model files (`model.keras`) and their `meta.json` are auto-detected as stale (wr
 * **Losing closes teach.** Every losing close blacklists the symbol for 72 hours and fine-tunes the ML brain overnight (17:00 ET daily retrain on the last 15k trades). Wins just log observations.
 * **Weak-bull downgrade.** If regime is BULL past 10:35 ET and no trades have fired today, the regime downgrades to SIDEWAYS for the rest of the day (avoids "bull that never actually pulls back to buy").
 * **Emergency stop is a flag, not a kill.** It stops new entries and cancels open orders; positions still exit via their normal rules unless you click sell-all.
+* **Only one instance per host.** The dashboard binds port 8765 — run at most one bot per machine (or change `DASHBOARD_WS_PORT`).
 
 ---
 
