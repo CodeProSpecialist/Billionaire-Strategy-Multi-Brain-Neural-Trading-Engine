@@ -241,7 +241,6 @@ Model files (`model.keras`) and their `meta.json` are auto-detected as stale (wr
 * **Losing closes teach.** Every losing close blacklists the symbol for 72 hours and fine-tunes the ML brain overnight (17:00 ET daily retrain on the last 15k trades). Wins just log observations.
 * **Weak-bull downgrade.** If regime is BULL past 10:35 ET and no trades have fired today, the regime downgrades to SIDEWAYS for the rest of the day (avoids "bull that never actually pulls back to buy").
 * **Emergency stop is a flag, not a kill.** It stops new entries and cancels open orders; positions still exit via their normal rules unless you click sell-all.
-* **Cannot run two bots on the same host.** The dashboard port 8765 is shared with the sibling Kalshi robot — pick one per host.
 
 ---
 
