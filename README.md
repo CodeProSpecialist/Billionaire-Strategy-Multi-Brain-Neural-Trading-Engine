@@ -4,6 +4,8 @@ An automated day-trading bot for Alpaca that runs a rules-based dip-buy scanner 
 
 ---
 
+New Upgrade on August 21, 2026. 
+
 ## What it does
 
 - Scans a curated NASDAQ-100 + S&P 500 large-cap universe for dip-buy setups (RSI oversold, MACD bullish crossover, above 200-day SMA, multi-timeframe confirmation).
