@@ -1,262 +1,146 @@
-New Upgrade on August 21, 2026. 
+# Billionaire Strategy Stock Market Trading Robot
 
-# Billionaire Alpaca Robot
+Single-file automated Alpaca daytrading bot for NASDAQ + S&P 500 equities, driven by an ensemble of neural-net "brains" and a rules-based dip-buy / bull-momentum strategy. Ships with a live browser dashboard.
 
-An automated, single-file NASDAQ / S&P 500 daytrading bot that trades through the Alpaca API. Six neural-network "brains" collaborate on every entry, a live web dashboard shows what the bot is thinking, and every risky action is gated by a safety-first ensemble that can be tightened, loosened, or shut off from the browser without restarting the bot.
-
-**Version 10** — ~12,400 lines of Python in one file, plus a static HTML dashboard.
-
-> ⚠️ This software trades real money. Paper-trade first (`APCA_API_BASE_URL=https://paper-api.alpaca.markets`). Nothing in this repo is investment advice.
+**Files**
+- `billionaire-strategy-buy-lowest-price-stock-market-robot.py` — the bot (~12.5k lines, one file, banner "Version 10")
+- `alpaca_dashboard.html` — the dashboard UI it serves at `ws://127.0.0.1:8765`
 
 ---
 
-## What it does
-
-Every ~60 seconds the bot:
-
-1. **Scans** the S&P 500 + NASDAQ universe for dip-buy setups (RSI, MACD, SMA structure, volume, VWAP, multi-timeframe intraday pullback).
-2. **Scores** each candidate with a rule-based signal, then adjusts the score with up to six neural brains (see below).
-3. **Votes** on every candidate through the Chair (Brain E) — any brain can veto, the portfolio manager can resize.
-4. **Enters** the top-ranked survivors up to `MAX_NEW_POSITIONS_PER_CYCLE` (default 3) using ATR-based position sizing.
-5. **Exits** open positions through a stack of protective rules: hard stop-loss, chandelier ATR trailing stop, bad-news stop tightener, scaled profit exits, and a profit-monitor peak follower.
-
-A **bull-market strategy** runs alongside the ML-scored path during confirmed uptrends (10:02 AM – 3:35 PM ET), buying momentum breakouts with a 1% trailing stop and 0.5% take-profit.
-
----
-
-## The six brains
-
-| Brain | Role | Type | Authority |
-|---|---|---|---|
-| **A · ML Trading Brain** | Predicts P(this dip-buy wins) from a 20-day sequence of 32 daily features (10 stock + 20 NASDAQ proxy + 2 relative-strength). Conv1D → 2× LSTM head on a frozen hand-weighted foundation. | Sequence model, focal loss γ=1.2 | Advisory (± 1.5 score points) |
-| **B · Risk Brain** | Portfolio-safety gate. 12 features (margin, exposure, VIX, consec losses, session P&L, drawdown concentration, churn, regime risk) → P(safe). | Feedforward NN, frozen foundation + trainable head | **Veto when armed** if P(safe) < 0.40 |
-| **C · Backtest Brain** | Walks 5 years of daily history, replays the simplified dip-buy on this symbol, simulates exits under the bot's actual rules, vetoes if regime-weighted win rate < 50%. | Deterministic historical replay, 4-hour per-symbol cache | **Veto when armed** |
-| **D · Portfolio Manager** | Reads trajectory of the account (7d/30d return, Sharpe, max drawdown, win rate, profit factor, exposure) → outputs `size_multiplier`, `aggression`, `concentration_multiplier`. | Feedforward NN, 3-head sigmoid output | Nudge only (never vetoes) |
-| **E · Chair** | Deterministic ensemble aggregator. Collects every brain's vote, posts them all to the Brain Trading Floor, applies Portfolio_D sizing when armed, blocks the trade on any DENY. | Rule-based aggregation (not an LLM) | Final say |
-| **F · Bullish-Trend Picker** | Independent second opinion on trend quality. 12 features including RSI, MACD, SMA slope/structure, ATR%, volume, and Alpaca news sentiment → P(bullish). | Feedforward NN, 9-unit frozen foundation | Additive bump ± 0.5 score points |
-
-Plus a **RISK_TIME** gate (early-morning entry restriction, see Config below) that votes DENY when armed and out of window.
-
----
-
-## Safety systems
-
-* **Hard stop-loss** at 2× ATR from entry (min −3%), sized so `RISK_PER_TRADE_PCT = 1%` of equity is the actual maximum loss per position.
-* **Chandelier ATR trailing stop** — `peak_since_entry − 3× entry_ATR`, ratchets up only, fires between the hard stop and the profit monitor.
-* **Bad-news stop tightener** — when Brain F detects negative Alpaca news on an owned position (rolling neg-only sentiment ≥ 0.20), the stop tightens to 0.3% below current price. Only *raises* the stop, never lowers it.
-* **Profit monitor** — arms after a position is +profit, follows the peak, exits on a configurable retracement.
-* **Scaled exits** at profit milestones, moving the floor to breakeven after the first stage.
-* **Trade Governor** — 5 consecutive losses trip a 30-minute cooldown; 3% daily profit lock ends the session.
-* **Auto blacklist** — losing closes add the symbol to a 72-hour timeout; a permanent list is also supported.
-* **Per-symbol mute** — a symbol with ≥5 trades, negative P&L, and win rate < 30% is muted for 24 hours.
-* **Early-morning gate** — no new entries before 10:05 AM ET unless the stock is down ≥ 2% from yesterday's close (skip the thin, fake-out-prone open).
-* **Margin-health floor** — buys suspended when equity / long_market_value < 30%.
-
----
-
-## Live web dashboard
-
-A tile-based, dark-themed dashboard runs on `127.0.0.1:8765` (WebSocket, 1 Hz). Open `alpaca_dashboard.html` in a browser.
-
-The dashboard shows:
-
-* **Account, Market Regime, Trade Governor** — equity, buying power, VIX, current regime, cooldown state.
-* **Risk Brain (B), Portfolio Mgr (D), Bullish Picker (F)** — mode, key output (P(safe) / size × / P(bullish)), model status, top features driving the current call.
-* **Brains** tile — Backtest / Chandelier mode + thresholds, Brain Trust rolling accuracy.
-* **Live Positions** — entry, current, gain %, chandelier stop.
-* **Profit Monitor** — armed positions with peak, floor, and last-seen tick.
-* **Recent Trades** — last 25 fills.
-* **Brain Trading Floor** — running feed of every brain's decisions, user commands, lessons from closed trades. Free-text terminal at the bottom accepts `status | pause | resume | sell_all | blacklist SYM 72h | unblacklist SYM | clear | help`.
-* **72-hour auto blacklist**, **permanent blacklist**, **muted symbols**.
-* **Settings** — 15+ live-mutable knobs (all three brain modes, thresholds, chandelier ATR multiplier, cooldown seconds, mute win-rate, etc.). Changes apply immediately, no restart.
-* **Robot Control** — pause / resume / sell-all / emergency-stop, all with browser-side confirmation.
-
----
-
-## Requirements
-
-**Python** 3.10+ (tested on 3.12).
-
-The bot **bootstraps its own dependencies** on first launch — it runs `pip list --format=freeze` and quietly installs anything missing. You do not need to run `pip install` yourself. The auto-installed packages are:
-
-```
-alpaca-trade-api    alpaca-py           pytz                numpy
-TA-Lib              yfinance            SQLAlchemy          ratelimit
-pandas-market-calendars                 pandas              schedule
-websockets                              requests
-tensorflow *
-```
-
-\* TensorFlow is optional but recommended. Without it, all six brains degrade gracefully — the rule-based signal still trades, dashboards still work. With it, the bot auto-detects an NVIDIA GPU and swaps in the CPU / GPU wheel accordingly, restarting once if the wheel changed.
-
-**TA-Lib** needs the C library. macOS is easy:
+## Quick start
 
 ```bash
-brew install ta-lib
+export APCA_API_KEY_ID=your_key
+export APCA_API_SECRET_KEY=your_secret
+export APCA_API_BASE_URL=https://paper-api.alpaca.markets   # or live
+python billionaire-strategy-buy-lowest-price-stock-market-robot.py
 ```
 
-On Debian/Ubuntu there is no distro package — build from source:
+Then open `alpaca_dashboard.html` in a browser. It connects to the bot over WebSocket on `127.0.0.1:8765` at 1 Hz.
 
-```bash
-sudo apt-get install build-essential wget
-wget https://github.com/ta-lib/ta-lib/releases/download/v0.6.4/ta-lib-0.6.4-src.tar.gz
-tar -xzf ta-lib-0.6.4-src.tar.gz
-cd ta-lib-0.6.4
-./configure --prefix=/usr
-make
-sudo make install
-```
+On first launch the bot will:
+1. Bootstrap-install any missing dependencies via `pip list` + `pip install` (stdlib-only, no `--break-system-packages`).
+2. Auto-detect an NVIDIA GPU and swap `tensorflow` ↔ `tensorflow-cpu` accordingly, then `os.execv`-restart itself once (guarded against loops).
+3. Scan the current S&P 500 universe (~504 tickers, 2026 list).
+4. Pretrain all brains that don't yet have a saved model on disk — Brain B (risk) → Brain D (portfolio) → ML Brain (Brain A, ~20k synthetic examples) → Brain F (bullish picker).
 
-(Check https://github.com/ta-lib/ta-lib/releases for the latest version.)
+Total cold start is a few minutes; subsequent starts skip pretraining.
 
 ---
 
-## Install & run
+## Strategy in one paragraph
 
-```bash
-git clone https://github.com/<you>/billionaire-alpaca-robot
-cd billionaire-alpaca-robot
+The bot runs two parallel entry paths. The **dip-buy path** scores every candidate on RSI/MACD/SMA/ATR structure, then routes the score through a chain of brains (ML win-probability adjustment, backtest veto, risk veto, bullish-picker bump, early-morning gate) before the "Chair" ensemble makes a single go/no-go decision and Portfolio Manager sizes the notional. The **bull-momentum path** only fires in a confirmed bull regime during 10:02–15:35 ET, monitors a candidate live for 180s, and buys when strict momentum + volume + MACD/RSI conditions all fire. Exits are a layered stack: broker-side trailing stop, chandelier ATR stop that ratchets with peak price, profit-monitor round-trip rescue, hard 2×ATR stop, and a bad-news stop-tightener that fires when Brain F's negative news sentiment on an owned position crosses a threshold.
 
-# 1. Set your Alpaca credentials (paper first!)
-export APCA_API_KEY_ID='PK...'
-export APCA_API_SECRET_KEY='...'
-export APCA_API_BASE_URL='https://paper-api.alpaca.markets'   # or live: https://api.alpaca.markets
+---
 
-# 2. Just run it — deps install on first launch
-python3 billionaire-strategy-buy-lowest-price-stock-market-robot.py
-```
+## The brain suite
 
-First launch will:
+| Brain | Role | Mode |
+|---|---|---|
+| **A — ML Brain (TFBrain)** | Conv1D + 2×LSTM on frozen hand-weighted foundation. 32 features (10 stock + 20 NASDAQ + 2 relative strength). Adjusts buy score ±1.5. | armed |
+| **B — Risk Brain** | 12-feature NN → P(safe). Vetoes new entries when portfolio state is dangerous. | shadow (default) |
+| **C — Backtest Brain** | Replays 5y history under actual exit rules, vetoes if regime-weighted win rate < 50%. | armed |
+| **D — Portfolio Manager** | 10 trajectory features → size_multiplier, aggression, concentration. Nudges Chair only. | shadow (default) |
+| **E — Chair** | Deterministic ensemble aggregator. Any DENY → skip; else D's multiplier scales notional. | always on |
+| **F — Bullish Picker** | 12-feature NN → P(bullish), +news sentiment. Bumps buy score up to +0.5. | armed |
+| **RISK_TIME** | Blocks new entries before 10:05 ET unless candidate is ≥2% below yesterday's close. | armed |
 
-1. Bootstrap missing pip packages (silent, one-time).
-2. Detect GPU vs CPU and swap the TensorFlow wheel if needed (`execv` restart, one time).
-3. Pretrain **Brain B** (risk, ~seconds), **Brain D** (portfolio, ~seconds), **Brain A** (ML trading, ~minutes on 20k historical examples), and **Brain F** (bullish picker, ~5s on 20k synthetic examples).
-4. Scan the S&P 500 for the initial watchlist (~7 seconds via Alpaca IEX).
-5. Wait for market open, then start trading.
+All brains post to the **Brain Trading Floor** — a shared message bus that logs every vote, lesson, and observation. The dashboard exposes it as a live terminal.
 
-Open the dashboard in a separate browser tab:
+---
 
-```bash
-firefox alpaca_dashboard.html
-# or just open the file — it connects to ws://127.0.0.1:8765 automatically
-```
+## Data plumbing
+
+- **Alpaca-py `StockHistoricalDataClient`** is primary for daily bars (IEX free feed) — ~78× faster than yfinance for the S&P 500 batch (7s vs 540s).
+- **yfinance** is fallback for daily and stays primary for intraday (1m/5m/60m) and `^`-prefixed indices (VIX).
+- Symbol convention: yfinance-form internally (`BRK-B`); `to_alpaca()` / `to_yf()` swap the dot when talking to Alpaca.
+- **`alpaca-trade-api`** (legacy) still handles orders, positions, cash, and portfolio history.
+- **News**: Alpaca News API v1beta1 (Benzinga, free with existing keys), rolling 3-day window, 15 min cache, ~80 positive / ~70 negative keywords with negation lookback.
+
+---
+
+## Safety layers
+
+- **BlacklistManager** — two-tier (permanent + 72h temporary), auto-adds losing closes, persisted to `blacklist.json`.
+- **TradeGovernor** — 5 consecutive losses → 30 min cooldown; 3% daily profit locks the day; auto-resets on ET date roll.
+- **PerSymbolPerformance** — mutes a symbol for 24h after 5+ trades with <30% win rate and negative PnL.
+- **BrainTrustTracker** — rolling accuracy per brain (windows 50/200/1000); observation-only for now.
+- Early-morning gate blocks thin/volatile 9:30–10:05 ET entries unless there's a real ≥2% overnight dislocation.
+
+---
+
+## Dashboard
+
+Open `alpaca_dashboard.html` directly in a browser — no server needed, it's a static file that connects to the bot's WebSocket. Tiles:
+
+- **Header**: Account, Regime, Governor, Brains A–F, Risk (B), Portfolio Mgr (D)
+- Live Positions · Profit Monitor (ARMED / TOUCHED / waiting) · Recent Trades
+- Brain Trading Floor terminal (accepts commands: `status`, `pause`, `resume`, `sell_all`, `blacklist <SYM> [Nh|perm]`, `unblacklist`, `clear`, `help`)
+- 72h Auto Blacklist · Permanent Blacklist · Muted
+- Settings (14 whitelisted keys apply immediately, no restart)
+- Robot Control (pause / resume / sell-all / emergency stop)
+
+If the `websockets` package is missing, the dashboard is silently disabled and the bot keeps trading.
 
 ---
 
 ## Configuration
 
-Everything is a module-level constant near the top of the .py file. The most-tuned knobs:
-
-### Position sizing & risk
+Runtime knobs live as module-level constants near the top of each section. Key ones:
 
 ```python
-RISK_PER_TRADE_PCT              = 0.01     # 1% of equity risked per position
-MAX_ALLOCATION_PER_SYMBOL       = 600.0    # $ cap
-MAX_NEW_POSITIONS_PER_CYCLE     = 3        # rank all candidates, buy top-N
-MAX_PORTFOLIO_EXPOSURE_PCT      = 0.98     # of buying power
-MAX_LEVERAGE                    = 1.0      # 2.0 to enable Reg-T intraday
-MAINTENANCE_MARGIN_FLOOR_PCT    = 0.30     # halt buys below this
-```
+# Bull-momentum path
+BULL_BUY_WINDOW = (time(10, 2), time(15, 35))
+BULL_MONITOR_SECONDS = 180
+BULL_MIN_NET_RETURN = 0.001
+BULL_MAX_ALLOCATION_PER_SYMBOL = 600
 
-### Exit rules
+# Chandelier ATR trailing stop
+CHANDELIER_MODE = 'armed'
+CHANDELIER_ATR_MULT = 3.0
+CHANDELIER_MIN_HOLD_SECS = 300
 
-```python
-HARD_STOP_ATR_MULTIPLIER   = 2.0    # entry − 2×ATR
-HARD_STOP_MIN_PCT          = 0.03   # floor at −3% for low-ATR stocks
-CHANDELIER_ATR_MULT        = 3.0    # LeBeau default
-CHANDELIER_MIN_HOLD_SECS   = 300    # ignore entry-noise stop-outs
-BAD_NEWS_STOP_THRESHOLD    = 0.20   # neg-news sentiment that triggers tightener
-BAD_NEWS_TIGHTEN_STOP_PCT  = 0.003  # 0.3% below current on bad news
-```
+# Profit-monitor round-trip rescue
+PROFIT_TOUCHED_PCT = 0.002       # +0.2%
+ROUND_TRIP_EXIT_GAIN = 0.0       # breakeven-or-below
 
-### Brain modes (all live-toggle from dashboard)
+# Bad-news stop tightener
+BAD_NEWS_STOP_MODE = 'armed'
+BAD_NEWS_STOP_THRESHOLD = 0.20
+BAD_NEWS_TIGHTEN_STOP_PCT = 0.003
 
-```python
-BRAIN_B_MODE           = 'shadow'   # 'armed' | 'shadow'
-BRAIN_B_MIN_SAFE       = 0.40
-BRAIN_D_MODE           = 'shadow'
-BRAIN_F_MODE           = 'armed'    # 'armed' | 'shadow' | 'off'
-BRAIN_F_MIN_PROB_TO_BUMP = 0.55
-BRAIN_F_MAX_SCORE_BUMP = 0.5
-BACKTEST_BRAIN_MODE    = 'armed'    # 'armed' | 'advisory'
-BACKTEST_MIN_WIN_RATE  = 0.50
-CHANDELIER_MODE        = 'armed'    # 'armed' | 'shadow' | 'off'
-EARLY_MORNING_GATE_MODE = 'armed'   # 'armed' | 'shadow' | 'off'
+# Early-morning gate
 EARLY_MORNING_CUTOFF_ET = time(10, 5)
 EARLY_MORNING_MIN_DROP_PCT = 0.02
+
+# Governor
+CONSEC_LOSS_COOLDOWN = 5
+COOLDOWN_SECONDS = 1800
+DAILY_PROFIT_LOCK_PCT = 0.03
 ```
 
-### Governor
-
-```python
-CONSEC_LOSS_COOLDOWN         = 5
-COOLDOWN_SECONDS             = 1800     # 30 min
-DAILY_PROFIT_LOCK_PCT        = 0.03     # 3% session gain ends the day
-PERSYMBOL_MUTE_WINRATE       = 0.30
-PERSYMBOL_MIN_TRADES         = 5
-PERSYMBOL_MUTE_DURATION_SECONDS = 86400  # 24h
-BLACKLIST_TEMP_DURATION_SECONDS  = 259200  # 72h
-```
-
-### Dashboard
-
-```python
-DASHBOARD_WS_ENABLED   = True
-DASHBOARD_WS_HOST      = '127.0.0.1'   # '0.0.0.0' to expose on LAN
-DASHBOARD_WS_PORT      = 8765
-```
+Most brain modes are `'armed'` / `'shadow'` / `'off'` and can be toggled live from the dashboard Settings tile.
 
 ---
 
-## Data sources
+## Dependencies
 
-| What | Where | Latency / cost |
-|---|---|---|
-| Daily bars (scanner, indicators, ML features) | Alpaca IEX free plan (primary) → yfinance (fallback) | S&P 500 in ~7s vs ~540s on yfinance |
-| Latest trade for bull-strategy live sampling | Alpaca IEX `get_stock_latest_trade` | ~100 ms |
-| Intraday 1m / 5m / 60m VWAP | yfinance | Not yet migrated to Alpaca |
-| Order execution, positions, cash, portfolio history | Alpaca trading API | Real-time |
-| News sentiment (Brain F, bad-news stop) | Alpaca News API v1beta1 (Benzinga) | Free with existing keys, 15-min per-symbol cache |
-| VIX / SPY regime | yfinance (`^VIX`, `SPY`) | Cached per session |
-
-Ticker convention: yfinance uses `BRK-B` (dash), Alpaca uses `BRK.B` (dot). The bot keeps yfinance form internally and converts at the Alpaca boundary via `to_alpaca()` / `to_yf()`.
-
----
-
-## File layout
+Auto-installed on first launch, but for reference:
 
 ```
-billionaire-strategy-buy-lowest-price-stock-market-robot.py   # the bot (~12.4k lines, single file)
-alpaca_dashboard.html                                         # dashboard UI (open in browser)
-ml_brain/                                                     # created at runtime
-  brain_a_model/                                              #   ML trading brain (Brain A)
-  brain_b_risk_model/                                         #   Risk brain (Brain B)
-  brain_d_portfolio_model/                                    #   Portfolio manager (Brain D)
-  brain_f_bullish_model/                                      #   Bullish picker (Brain F)
-schedule_state.json                                           # last-run bookkeeping
-blacklist.json                                                # persistent blacklist
-trades.db                                                     # SQLite: positions, history, features
+alpaca-trade-api  alpaca-py  pytz  numpy  TA-Lib  yfinance
+SQLAlchemy  ratelimit  pandas-market-calendars  pandas
+schedule  websockets  requests  tensorflow (or tensorflow-cpu)
 ```
 
-Model files (`model.keras`) and their `meta.json` are auto-detected as stale (wrong feature count, wrong architecture) and rebuilt without operator intervention.
+`TA-Lib` requires the system `libta-lib` C library be installed first.
 
 ---
 
-## Operating notes
+## Notes
 
-* **Paper first.** Every knob works the same on paper — validate for a week before pointing at a live account.
-* **Portfolio summary every hour.** The bot prints 24h / 7d / 14d / 30d equity gain in the terminal, cross-referenced against NYSE trading sessions (skips weekends and holidays).
-* **Losing closes teach.** Every losing close blacklists the symbol for 72 hours and fine-tunes the ML brain overnight (17:00 ET daily retrain on the last 15k trades). Wins just log observations.
-* **Weak-bull downgrade.** If regime is BULL past 10:35 ET and no trades have fired today, the regime downgrades to SIDEWAYS for the rest of the day (avoids "bull that never actually pulls back to buy").
-* **Emergency stop is a flag, not a kill.** It stops new entries and cancels open orders; positions still exit via their normal rules unless you click sell-all.
-* **Only one instance per host.** The dashboard binds port 8765 — run at most one bot per machine (or change `DASHBOARD_WS_PORT`).
-
----
-
-## License
-
-GNU General Public License v3.0. This program is free software: you can redistribute it and/or modify it under the terms of the GNU GPL v3 as published by the Free Software Foundation. Distributed WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See `LICENSE` for the full text, or <https://www.gnu.org/licenses/gpl-3.0.html>.
-
-## Disclaimer
-
-Automated trading involves substantial risk of loss. The bot's brains are trained on limited data, its assumptions may be wrong, and market conditions change faster than any backtest can capture. Use paper trading extensively. Understand every rule before enabling live trading. You are responsible for anything this software does to your account.
+- Trading path and market-data path use two separate Alpaca clients on purpose.
+- The ML brain retrains 15k examples on live trades daily at 17:00 ET (20k lifetime pretrain cap).
+- All exit decisions remain rule-based; brains only influence *entries* and *position sizing*.
