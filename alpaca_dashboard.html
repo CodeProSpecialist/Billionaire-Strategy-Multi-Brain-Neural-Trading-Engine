@@ -1,0 +1,1144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Billionaire Alpaca Robot · Dashboard</title>
+<style>
+:root {
+  --bg: #0a0e15; --bg2: #131826; --bg3: #1a2030; --bg4: #232a3d;
+  --fg: #e6e9ef; --fg2: #9aa4b2; --fg3: #6b7484;
+  --border: #2a3040;
+  --green: #10b981; --red: #ef4444; --amber: #f59e0b; --blue: #58a6ff;
+  --purple: #a78bfa;
+  --accent: #38bdf8;
+  --mono: 'SF Mono', 'Menlo', Consolas, monospace;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 10px; background: var(--bg); color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 13px;
+}
+h1 {
+  margin: 0 0 10px 0; font-size: 18px; font-weight: 500;
+  display: flex; align-items: center; gap: 12px;
+}
+h1 span { color: var(--fg3); font-size: 12px; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--red); }
+.dot.on { background: var(--green); box-shadow: 0 0 6px var(--green); }
+
+.grid { display: grid; gap: 10px;
+        grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+.grid.narrow { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.card {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 8px; overflow: hidden; display: flex; flex-direction: column;
+}
+.card-hd {
+  padding: 8px 12px; background: var(--bg3); border-bottom: 1px solid var(--border);
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  min-height: 34px;
+}
+.card-hd h2 {
+  margin: 0; font-size: 12px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--fg2);
+}
+.card-bd { padding: 10px 12px; }
+.card-bd.pad-sm { padding: 6px 8px; }
+.full-row { grid-column: 1 / -1; }
+.scroll-y { overflow-y: auto; }
+
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
+.kv .k { color: var(--fg3); }
+.kv .v { font-family: var(--mono); text-align: right; }
+
+.tag {
+  display: inline-block; padding: 2px 8px; border-radius: 10px;
+  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.04em; background: var(--bg4); color: var(--fg2);
+}
+.tag-green { background: rgba(16,185,129,0.15); color: var(--green); }
+.tag-red { background: rgba(239,68,68,0.15); color: var(--red); }
+.tag-amber { background: rgba(245,158,11,0.15); color: var(--amber); }
+.tag-blue { background: rgba(88,166,255,0.15); color: var(--blue); }
+.tag-purple { background: rgba(167,139,250,0.15); color: var(--purple); }
+
+.green { color: var(--green); } .red { color: var(--red); } .yellow { color: #d4b12d; }
+.amber { color: var(--amber); } .blue { color: var(--blue); }
+.purple { color: var(--purple); }
+.mono { font-family: var(--mono); }
+
+table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
+th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th { color: var(--fg3); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+td.right, th.right { text-align: right; }
+
+.btn {
+  background: var(--bg4); color: var(--fg); border: 1px solid var(--border);
+  padding: 5px 10px; font-size: 11px; border-radius: 4px; cursor: pointer;
+  font-family: inherit; font-weight: 500;
+}
+.btn:hover { background: #2d3550; }
+.btn-sm { padding: 3px 8px; font-size: 10px; }
+.btn-red { border-color: var(--red); color: var(--red); }
+.btn-green { border-color: var(--green); color: var(--green); }
+.btn-amber { border-color: var(--amber); color: var(--amber); }
+.btn-blue { border-color: var(--blue); color: var(--blue); }
+.btn-row { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* Position tiles */
+.pos-tile { background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; }
+.pos-tile.winning { border-left: 3px solid var(--green); }
+.pos-tile.losing { border-left: 3px solid var(--red); }
+.pos-tile-head { display: flex; justify-content: space-between; align-items: baseline; }
+.pos-tile-sym { font-weight: 700; font-size: 14px; }
+.pos-tile-gain { font-family: var(--mono); font-weight: 700; }
+.pos-tile-body { font-family: var(--mono); font-size: 11px; color: var(--fg3);
+  margin-top: 4px; display: grid; grid-template-columns: 1fr 1fr; gap: 2px 12px; }
+.pos-tile-body b { color: var(--fg); font-weight: 500; }
+
+/* Brain Trading Floor */
+.feed-item { padding: 3px 6px; border-bottom: 1px solid var(--border);
+  font-family: var(--mono); font-size: 11px; line-height: 1.5;
+  display: flex; gap: 8px; align-items: baseline; }
+.feed-item .ts { color: var(--fg3); font-size: 10px; min-width: 60px; }
+.feed-item .brain { font-weight: 700; min-width: 70px; color: var(--purple); }
+.feed-item .msg { flex: 1; word-break: break-word; }
+.feed-item.user-msg { background: rgba(88,166,255,0.06); }
+.feed-item.user-msg .brain { color: var(--blue); }
+.feed-item.alert { background: rgba(239,68,68,0.06); }
+.feed-item.alert .brain { color: var(--red); }
+.feed-item.approve .brain { color: var(--green); }
+.feed-item.block .brain { color: var(--red); }
+.feed-item.lesson .brain { color: var(--amber); }
+.feed-item.instruction .brain { color: var(--blue); }
+.feed-item.observation .brain { color: var(--fg2); }
+
+.floor-bar {
+  padding: 6px 12px; background: var(--bg3); border-top: 1px solid var(--border);
+  display: flex; gap: 16px; font-size: 11px; color: var(--fg3); font-family: var(--mono);
+}
+.floor-input-row {
+  padding: 8px 12px; background: var(--bg3); border-top: 1px solid var(--border);
+  display: flex; gap: 8px;
+}
+.floor-input {
+  flex: 1; background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 4px; padding: 6px 10px; font-family: var(--mono); font-size: 12px;
+  outline: none;
+}
+.floor-input:focus { border-color: var(--accent); }
+.floor-send {
+  background: var(--accent); color: #000; border: none; padding: 6px 12px;
+  border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 12px;
+}
+
+/* Chip */
+.chip-box { display: flex; flex-wrap: wrap; gap: 4px; min-height: 24px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px;
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 12px; font-size: 11px; font-family: var(--mono);
+}
+.chip .x { color: var(--fg3); cursor: pointer; padding: 0 2px; }
+.chip .x:hover { color: var(--red); }
+.chip.perm { border-color: var(--red); }
+.chip.temp { border-color: var(--amber); color: var(--amber); }
+
+/* Settings inputs */
+.inp-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 4px 0; gap: 8px;
+}
+.inp-row label { font-size: 12px; color: var(--fg2); }
+.inp {
+  background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 4px; padding: 4px 8px; font-family: var(--mono); font-size: 12px;
+  min-width: 80px; outline: none;
+}
+.inp:focus { border-color: var(--accent); }
+.inp-sel {
+  background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 4px; padding: 4px 8px; font-family: var(--mono); font-size: 12px;
+  outline: none;
+}
+.section-div {
+  margin: 10px 0 4px 0; padding-bottom: 2px;
+  border-bottom: 1px solid var(--border);
+}
+.section-div h3 {
+  margin: 0; font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--fg2);
+}
+.footer {
+  margin-top: 12px; text-align: center; color: var(--fg3); font-size: 11px;
+  font-family: var(--mono);
+}
+</style>
+</head>
+<body>
+
+<h1>
+  <span id="conn-dot" class="dot"></span>
+  Billionaire Alpaca Robot
+  <span id="conn-txt">disconnected</span>
+</h1>
+
+<div class="grid narrow">
+  <div class="card">
+    <div class="card-hd"><h2>💰 Account</h2><span class="tag" id="acctTag">—</span></div>
+    <div class="card-bd">
+      <div class="kv">
+        <div class="k">Equity</div><div class="v" id="a-equity">—</div>
+        <div class="k">Buying Power</div><div class="v" id="a-bp">—</div>
+        <div class="k">Cash</div><div class="v" id="a-cash">—</div>
+        <div class="k">Exposure</div><div class="v" id="a-exposure">—</div>
+        <div class="k">Effective BP</div><div class="v" id="a-effbp">—</div>
+        <div class="k">Margin Health</div><div class="v" id="a-mh">—</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-hd"><h2>📈 Market Regime</h2><span class="tag" id="regTag">—</span></div>
+    <div class="card-bd">
+      <div class="kv">
+        <div class="k">Regime</div><div class="v" id="r-regime">—</div>
+        <div class="k">VIX</div><div class="v" id="r-vix">—</div>
+        <div class="k">Weak Bull</div><div class="v" id="r-dg">—</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-hd"><h2>🛑 Trade Governor</h2><span class="tag" id="govTag">—</span></div>
+    <div class="card-bd">
+      <div class="kv">
+        <div class="k">Can Trade</div><div class="v" id="g-can">—</div>
+        <div class="k">Consec. Losses</div><div class="v" id="g-losses">—</div>
+        <div class="k">Cooldown</div><div class="v" id="g-cool">—</div>
+        <div class="k">Day Locked</div><div class="v" id="g-locked">—</div>
+        <div class="k">Reason</div><div class="v" id="g-reason" style="font-size:11px;">—</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-hd"><h2>🛡️ Risk Brain (B)</h2><span class="tag" id="bbTag">—</span></div>
+    <div class="card-bd">
+      <div class="kv">
+        <div class="k">Mode</div><div class="v" id="bb-mode">—</div>
+        <div class="k">P(safe)</div><div class="v" id="bb-psafe">—</div>
+        <div class="k">Min Safe</div><div class="v" id="bb-min">—</div>
+        <div class="k">Model</div><div class="v" id="bb-model">—</div>
+      </div>
+      <div class="section-div"><h3>Top Risk Features</h3></div>
+      <table id="bb-feats-tbl" style="font-size:11px;">
+        <thead><tr><th>Feature</th><th class="right">Value</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-hd"><h2>💼 Portfolio Mgr (D)</h2><span class="tag" id="bdTag">—</span></div>
+    <div class="card-bd">
+      <div class="kv">
+        <div class="k">Mode</div><div class="v" id="bd-mode">—</div>
+        <div class="k">Size ×</div><div class="v" id="bd-size">—</div>
+        <div class="k">Aggression</div><div class="v" id="bd-agg">—</div>
+        <div class="k">Concentration ×</div><div class="v" id="bd-conc">—</div>
+        <div class="k">Model</div><div class="v" id="bd-model">—</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-hd"><h2>📈 Bullish Picker (F)</h2><span class="tag" id="bfTag">—</span></div>
+    <div class="card-bd">
+      <div class="kv">
+        <div class="k">Mode</div><div class="v" id="bf-mode">—</div>
+        <div class="k">Last P(bullish)</div><div class="v" id="bf-pbull">—</div>
+        <div class="k">Last Symbol</div><div class="v" id="bf-sym">—</div>
+        <div class="k">Last Bump</div><div class="v" id="bf-bump">—</div>
+        <div class="k">Min P to Bump</div><div class="v" id="bf-minp">—</div>
+        <div class="k">Max Bump</div><div class="v" id="bf-maxbump">—</div>
+        <div class="k">Bumps (session)</div><div class="v" id="bf-count">—</div>
+        <div class="k">Model</div><div class="v" id="bf-model">—</div>
+      </div>
+      <div class="section-div"><h3>Top Bullish Features</h3></div>
+      <table id="bf-feats-tbl" style="font-size:11px;">
+        <thead><tr><th>Feature</th><th class="right">Value</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-hd"><h2>🧠 Brains</h2></div>
+    <div class="card-bd">
+      <div class="kv">
+        <div class="k">Backtest</div><div class="v" id="b-mode">—</div>
+        <div class="k">Threshold</div><div class="v" id="b-thresh">—</div>
+        <div class="k">Chandelier</div><div class="v" id="c-mode">—</div>
+        <div class="k">ATR×</div><div class="v" id="c-mult">—</div>
+      </div>
+      <div class="section-div"><h3>Brain Trust</h3></div>
+      <table id="brain-trust-tbl">
+        <thead><tr><th>Brain</th><th class="right">Trust</th><th class="right">N</th><th class="right">State</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <div class="card-hd"><h2>📊 Live Positions</h2><span class="tag" id="pos-count">0 open</span></div>
+    <div class="card-bd scroll-y" id="pos-list" style="max-height:400px;padding:6px 8px;">
+      <div style="color:var(--fg3);text-align:center;padding:20px;">No positions</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-hd"><h2>💎 Profit Monitor</h2><span class="tag" id="pm-count">0 tracked</span></div>
+    <div class="card-bd scroll-y" style="max-height:400px;">
+      <table id="pm-tbl">
+        <thead>
+          <tr><th>Symbol</th><th class="right">Peak</th><th class="right">Armed</th><th class="right">Last Seen</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div id="pm-empty" style="color:var(--fg3);text-align:center;padding:20px;">
+        No positions being monitored
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-hd"><h2>📋 Recent Trades</h2></div>
+    <div class="card-bd scroll-y" style="max-height:400px;">
+      <table id="trades-tbl">
+        <thead><tr><th>Symbol</th><th>Side</th><th class="right">Qty</th><th class="right">Price</th><th>Date</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="card full-row" style="margin-top:10px;">
+  <div class="card-hd">
+    <h2>🧠 Brain Trading Floor</h2>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <button class="btn btn-sm" onclick="send({type:'floor_clear'})">Clear</button>
+      <span class="tag" id="floorCommsBadge">0 msgs</span>
+    </div>
+  </div>
+  <div class="card-bd scroll-y" id="brainFeed" style="max-height:400px;padding:0;"></div>
+  <div class="floor-bar" id="floorBar">
+    <span>💡 <span id="fmInstr">0</span> instructions</span>
+    <span>📚 <span id="fmLessons">0</span> lessons</span>
+    <span>👁️ <span id="fmObs">0</span> observations</span>
+    <span>🎓 <span id="fmTrain">0</span> training events</span>
+  </div>
+  <div class="floor-input-row">
+    <input class="floor-input" id="floorInput" type="text"
+      placeholder="status | pause | resume | blacklist AAPL 72h | unblacklist AAPL | help"
+      maxlength="500" onkeydown="if(event.key==='Enter')sendFloorMsg()">
+    <button class="floor-send" onclick="sendFloorMsg()">Send ▸</button>
+  </div>
+</div>
+
+<div class="grid" style="margin-top:10px;">
+  <div class="card">
+    <div class="card-hd">
+      <h2>⏳ 72h Auto Blacklist</h2>
+      <button class="btn btn-sm" onclick="send({type:'blacklist_clear_temp'})">Clear All</button>
+    </div>
+    <div class="card-bd">
+      <div class="chip-box" id="tempBlChips">
+        <span style="color:var(--fg3);font-size:11px;">None active</span>
+      </div>
+      <div style="display:flex;gap:6px;margin-top:8px;">
+        <input class="inp" id="tempAdd" type="text" placeholder="Symbol" style="width:100px;">
+        <input class="inp" id="tempHours" type="number" value="72" step="1" min="1" style="width:60px;">
+        <button class="btn btn-sm" onclick="addTemp()">Add hrs</button>
+      </div>
+      <div style="font-size:10px;color:var(--fg3);margin-top:6px;">
+        Losing trades auto-add to this list for 72h.
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-hd"><h2>🚫 Permanent Blacklist</h2></div>
+    <div class="card-bd">
+      <div class="chip-box" id="permBlChips">
+        <span style="color:var(--fg3);font-size:11px;">None</span>
+      </div>
+      <div style="display:flex;gap:6px;margin-top:8px;">
+        <input class="inp" id="permAdd" type="text" placeholder="Symbol to block forever" style="width:150px;">
+        <button class="btn btn-sm btn-red" onclick="addPerm()">Add Permanent</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-hd"><h2>🔇 Muted (Auto)</h2></div>
+    <div class="card-bd scroll-y" style="max-height:200px;">
+      <table id="muted-tbl">
+        <thead><tr><th>Symbol</th><th class="right">Win %</th><th class="right">P&L</th><th class="right">N</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div id="muted-empty" style="color:var(--fg3);text-align:center;padding:12px;font-size:11px;">
+        None
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card full-row" style="margin-top:10px;">
+  <div class="card-hd">
+    <h2>🧠 Trade Intelligence</h2>
+    <span class="tag" id="intelTag">—</span>
+  </div>
+  <div class="card-bd">
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:12px;">
+      <div><div style="font-size:10px;color:var(--fg3);text-transform:uppercase;">Logged</div>
+        <div style="font-size:20px;font-weight:bold;color:var(--accent);" id="intelTotal">—</div></div>
+      <div><div style="font-size:10px;color:var(--fg3);text-transform:uppercase;">Completed</div>
+        <div style="font-size:20px;font-weight:bold;color:var(--accent);" id="intelDone">—</div></div>
+      <div><div style="font-size:10px;color:var(--fg3);text-transform:uppercase;">Open</div>
+        <div style="font-size:20px;font-weight:bold;color:var(--accent);" id="intelOpen">—</div></div>
+      <div><div style="font-size:10px;color:var(--fg3);text-transform:uppercase;">30d Win Rate</div>
+        <div style="font-size:20px;font-weight:bold;" id="intelWR">—</div></div>
+      <div><div style="font-size:10px;color:var(--fg3);text-transform:uppercase;">30d Avg Ret</div>
+        <div style="font-size:20px;font-weight:bold;" id="intelAvg">—</div></div>
+      <div><div style="font-size:10px;color:var(--fg3);text-transform:uppercase;">ML Model</div>
+        <div style="font-size:20px;font-weight:bold;" id="intelModel">—</div></div>
+    </div>
+
+    <div id="intelCalibWrap" style="display:none;margin-bottom:12px;padding:8px;background:var(--bg2);border-radius:4px;">
+      <div style="font-size:11px;color:var(--fg3);text-transform:uppercase;margin-bottom:4px;">Model Calibration (last 30d)</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:12px;">
+        <div>High confidence (P≥0.6): <b id="intelHighWR">—</b> win rate (<span id="intelHighN">0</span> trades)</div>
+        <div>Low confidence (P&lt;0.4): <b id="intelLowWR">—</b> win rate (<span id="intelLowN">0</span> trades)</div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+      <div>
+        <div class="section-div"><h3>Best Symbols (90d)</h3></div>
+        <table style="width:100%;font-size:12px;">
+          <thead><tr style="color:var(--fg3);text-align:left;">
+            <th>Symbol</th><th>N</th><th>WR</th><th>Sum</th><th>Size</th>
+          </tr></thead>
+          <tbody id="intelBestTbl"></tbody>
+        </table>
+      </div>
+      <div>
+        <div class="section-div"><h3>Worst Symbols (90d)</h3></div>
+        <table style="width:100%;font-size:12px;">
+          <thead><tr style="color:var(--fg3);text-align:left;">
+            <th>Symbol</th><th>N</th><th>WR</th><th>Sum</th><th>Size</th>
+          </tr></thead>
+          <tbody id="intelWorstTbl"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="section-div" style="margin-top:12px;"><h3>Recent Trades</h3></div>
+    <table style="width:100%;font-size:12px;">
+      <thead><tr style="color:var(--fg3);text-align:left;">
+        <th>Symbol</th><th>Entry</th><th>Return</th><th>Reason</th><th>P(win)</th><th>Size</th>
+      </tr></thead>
+      <tbody id="intelRecentTbl"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card full-row" style="margin-top:10px;">
+  <div class="card-hd">
+    <h2>⚙️ Settings</h2>
+    <span style="font-size:10px;color:var(--fg3);">changes apply immediately</span>
+  </div>
+  <div class="card-bd">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+      <div>
+        <div class="section-div"><h3>Chandelier Exit</h3></div>
+        <div class="inp-row">
+          <label>Mode</label>
+          <select class="inp-sel" id="sChandMode" onchange="setSetting('chandelier_mode', this.value)">
+            <option value="armed">armed</option>
+            <option value="shadow">shadow</option>
+            <option value="off">off</option>
+          </select>
+        </div>
+        <div class="inp-row">
+          <label>ATR Multiplier</label>
+          <input class="inp" id="sChandAtr" type="number" step="0.1" min="0.5"
+            onchange="setSetting('chandelier_atr_mult', parseFloat(this.value))">
+        </div>
+        <div class="inp-row">
+          <label>Min Hold (secs)</label>
+          <input class="inp" id="sChandHold" type="number" step="30" min="0"
+            onchange="setSetting('chandelier_min_hold_secs', parseInt(this.value))">
+        </div>
+
+        <div class="section-div"><h3>Backtest Brain</h3></div>
+        <div class="inp-row">
+          <label>Mode</label>
+          <select class="inp-sel" id="sBtMode" onchange="setSetting('backtest_brain_mode', this.value)">
+            <option value="armed">armed</option>
+            <option value="advisory">advisory</option>
+          </select>
+        </div>
+        <div class="inp-row">
+          <label>Min Win Rate</label>
+          <input class="inp" id="sBtThresh" type="number" step="0.05" min="0" max="1"
+            onchange="setSetting('backtest_min_win_rate', parseFloat(this.value))">
+        </div>
+        <div class="inp-row">
+          <label>Min Samples</label>
+          <input class="inp" id="sBtSamples" type="number" step="5" min="1"
+            onchange="setSetting('backtest_min_samples', parseInt(this.value))">
+        </div>
+
+        <div class="section-div"><h3>Risk Brain (B)</h3></div>
+        <div class="inp-row">
+          <label>Mode</label>
+          <select class="inp-sel" id="sBbMode" onchange="setSetting('brain_b_mode', this.value)">
+            <option value="shadow">shadow</option>
+            <option value="armed">armed</option>
+          </select>
+        </div>
+        <div class="inp-row">
+          <label>Min Safe</label>
+          <input class="inp" id="sBbMin" type="number" step="0.05" min="0" max="1"
+            onchange="setSetting('brain_b_min_safe', parseFloat(this.value))">
+        </div>
+
+        <div class="section-div"><h3>Portfolio Mgr (D)</h3></div>
+        <div class="inp-row">
+          <label>Mode</label>
+          <select class="inp-sel" id="sBdMode" onchange="setSetting('brain_d_mode', this.value)">
+            <option value="shadow">shadow</option>
+            <option value="armed">armed</option>
+          </select>
+        </div>
+
+        <div class="section-div"><h3>Bullish Picker (F)</h3></div>
+        <div class="inp-row">
+          <label>Mode</label>
+          <select class="inp-sel" id="sBfMode" onchange="setSetting('brain_f_mode', this.value)">
+            <option value="off">off</option>
+            <option value="shadow">shadow</option>
+            <option value="armed">armed</option>
+          </select>
+        </div>
+        <div class="inp-row">
+          <label>Max Score Bump</label>
+          <input class="inp" id="sBfMaxBump" type="number" step="0.05" min="0" max="2"
+            onchange="setSetting('brain_f_max_score_bump', parseFloat(this.value))">
+        </div>
+        <div class="inp-row">
+          <label>Min P to Bump</label>
+          <input class="inp" id="sBfMinProb" type="number" step="0.05" min="0.5" max="0.95"
+            onchange="setSetting('brain_f_min_prob_to_bump', parseFloat(this.value))">
+        </div>
+      </div>
+
+      <div>
+        <div class="section-div"><h3>Trade Governor</h3></div>
+        <div class="inp-row">
+          <label>Consec Loss Cooldown</label>
+          <input class="inp" id="sConsecLoss" type="number" step="1" min="1"
+            onchange="setSetting('consec_loss_cooldown', parseInt(this.value))">
+        </div>
+        <div class="inp-row">
+          <label>Cooldown Seconds</label>
+          <input class="inp" id="sCoolSecs" type="number" step="60" min="30"
+            onchange="setSetting('cooldown_seconds', parseInt(this.value))">
+        </div>
+        <div class="inp-row">
+          <label>Daily Profit Lock %</label>
+          <input class="inp" id="sDailyLock" type="number" step="0.005" min="0"
+            onchange="setSetting('daily_profit_lock_pct', parseFloat(this.value))">
+        </div>
+
+        <div class="section-div"><h3>Per-Symbol Mute</h3></div>
+        <div class="inp-row">
+          <label>Mute Win Rate</label>
+          <input class="inp" id="sPsMute" type="number" step="0.05" min="0" max="1"
+            onchange="setSetting('persymbol_mute_winrate', parseFloat(this.value))">
+        </div>
+        <div class="inp-row">
+          <label>Min Trades</label>
+          <input class="inp" id="sPsMin" type="number" step="1" min="1"
+            onchange="setSetting('persymbol_min_trades', parseInt(this.value))">
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card full-row" style="margin-top:10px;">
+  <div class="card-hd"><h2>🤖 Robot Control</h2></div>
+  <div class="card-bd">
+    <div class="btn-row">
+      <button class="btn btn-amber" onclick="doPause()">Pause (no new entries)</button>
+      <button class="btn btn-green" onclick="doResume()">Resume</button>
+      <button class="btn btn-red" onclick="doSellAll()">Sell All (confirm)</button>
+      <button class="btn btn-red" onclick="doEmergencyStop()">🚨 EMERGENCY STOP</button>
+    </div>
+    <div id="flags" style="margin-top:8px;color:var(--fg3);font-size:11px;"></div>
+  </div>
+</div>
+
+<div class="footer" id="footer">Last update: never</div>
+
+<script>
+const WS_URL = `ws://${location.hostname || '127.0.0.1'}:8765`;
+let ws = null, reconnectTimer = null;
+
+function connect() {
+  if (ws) { try { ws.close(); } catch(e){} }
+  document.getElementById('conn-txt').textContent = 'connecting…';
+  ws = new WebSocket(WS_URL);
+  ws.onopen = () => {
+    document.getElementById('conn-dot').classList.add('on');
+    document.getElementById('conn-txt').textContent = 'connected';
+  };
+  ws.onclose = () => {
+    document.getElementById('conn-dot').classList.remove('on');
+    document.getElementById('conn-txt').textContent = 'disconnected — retrying…';
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, 3000);
+  };
+  ws.onerror = () => {};
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'state') render(msg);
+    } catch(err) { console.error('bad msg', err); }
+  };
+}
+function send(obj) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+  else alert('Not connected to bot');
+}
+
+function doPause() { send({type: 'robot_pause'}); }
+function doResume() { send({type: 'robot_resume'}); }
+function doSellAll() {
+  if (!confirm('Sell ALL open positions at market price?\n\nThis cannot be undone.')) return;
+  send({type: 'sell_all'});
+}
+function doEmergencyStop() {
+  if (!confirm('EMERGENCY STOP:\n• Pause all new entries\n• Sell all positions at market\n\nProceed?')) return;
+  send({type: 'emergency_stop'});
+}
+function setSetting(key, value) { send({type: 'set_setting', key: key, value: value}); }
+function addPerm() {
+  const sym = document.getElementById('permAdd').value.trim().toUpperCase();
+  if (!sym) return;
+  if (!confirm(`Permanently blacklist ${sym}? (You can remove later.)`)) return;
+  send({type: 'blacklist_add_perm', symbol: sym});
+  document.getElementById('permAdd').value = '';
+}
+function addTemp() {
+  const sym = document.getElementById('tempAdd').value.trim().toUpperCase();
+  const hours = parseFloat(document.getElementById('tempHours').value) || 72;
+  if (!sym) return;
+  send({type: 'blacklist_add_temp', symbol: sym, hours: hours});
+  document.getElementById('tempAdd').value = '';
+}
+function removeBl(sym) { send({type: 'blacklist_remove', symbol: sym}); }
+
+const fmt = {
+  usd: (v) => v == null ? '—' : '$' + Number(v).toLocaleString('en-US',
+              {minimumFractionDigits: 2, maximumFractionDigits: 2}),
+  pct: (v) => v == null ? '—' : (v * 100).toFixed(1) + '%',
+  num: (v, d=2) => v == null ? '—' : Number(v).toFixed(d),
+  time: (ts) => { const d = new Date(ts * 1000);
+                  return d.toLocaleTimeString('en-US', {hour12: false}); },
+};
+const pnlClass = v => v == null ? '' : (v >= 0 ? 'green' : 'red');
+const pnlSign = v => (v >= 0 ? '+' : '') + (v * 100).toFixed(2) + '%';
+
+function render(s) {
+  renderAccount(s.account);
+  renderRegime(s.regime);
+  renderGovernor(s.governor);
+  renderBrains(s.backtest_brain, s.chandelier, s.brain_trust);
+  renderBrainB(s.brain_b);
+  renderBrainD(s.brain_d);
+  renderBrainF(s.brain_f);
+  renderPositions(s.positions);
+  renderProfitMonitor(s.profit_monitor);
+  renderTrades(s.recent_trades);
+  renderMuted(s.muted_symbols);
+  renderBlacklist(s.blacklist);
+  renderFloor(s.floor);
+  renderIntel(s.intel);
+  renderSettings(s.settings);
+  renderFlags(s.flags);
+  document.getElementById('footer').textContent = 'Last update: ' + fmt.time(s.ts);
+}
+
+function renderAccount(a) {
+  if (!a || a.error) return;
+  document.getElementById('a-equity').textContent = fmt.usd(a.equity);
+  document.getElementById('a-bp').textContent = fmt.usd(a.buying_power);
+  document.getElementById('a-cash').textContent = fmt.usd(a.cash);
+  document.getElementById('a-exposure').textContent = fmt.usd(a.exposure);
+  document.getElementById('a-effbp').textContent = fmt.usd(a.effective_bp);
+  const mh = document.getElementById('a-mh');
+  mh.textContent = fmt.num(a.margin_ratio, 2) + (a.healthy ? ' ✓' : ' ⚠');
+  mh.className = 'v ' + (a.healthy ? 'green' : 'red');
+  const tag = document.getElementById('acctTag');
+  tag.textContent = a.healthy ? 'HEALTHY' : 'DANGER';
+  tag.className = 'tag ' + (a.healthy ? 'tag-green' : 'tag-red');
+}
+
+function renderRegime(r) {
+  if (!r || r.error) return;
+  document.getElementById('r-regime').textContent = (r.regime||'?').toUpperCase();
+  document.getElementById('r-vix').textContent = fmt.num(r.vix, 1);
+  const dg = document.getElementById('r-dg');
+  dg.textContent = r.weak_bull_downgraded ? 'YES' : 'no';
+  dg.className = 'v ' + (r.weak_bull_downgraded ? 'amber' : '');
+  const tag = document.getElementById('regTag');
+  tag.textContent = (r.regime||'?').toUpperCase();
+  tag.className = 'tag ' + (r.regime === 'bull' ? 'tag-green' :
+                             r.regime === 'bear' ? 'tag-red' :
+                             r.regime === 'panic' ? 'tag-red' : 'tag-amber');
+}
+
+function renderGovernor(g) {
+  if (!g || g.error) return;
+  const can = document.getElementById('g-can');
+  can.textContent = g.can_trade ? 'YES' : 'NO';
+  can.className = 'v ' + (g.can_trade ? 'green' : 'red');
+  document.getElementById('g-losses').textContent = g.consec_losses;
+  document.getElementById('g-cool').textContent = g.in_cooldown ? 'active' : 'none';
+  document.getElementById('g-locked').textContent = g.day_locked ? 'LOCKED' : 'no';
+  document.getElementById('g-reason').textContent = g.reason || '—';
+  const tag = document.getElementById('govTag');
+  tag.textContent = g.can_trade ? 'OK' : 'BLOCKED';
+  tag.className = 'tag ' + (g.can_trade ? 'tag-green' : 'tag-red');
+}
+
+function renderBrains(b, c, t) {
+  if (b && !b.error) {
+    document.getElementById('b-mode').textContent = b.mode;
+    document.getElementById('b-mode').className = 'v ' + (b.mode === 'armed' ? 'green' : 'amber');
+    document.getElementById('b-thresh').textContent = fmt.pct(b.threshold);
+  }
+  if (c) {
+    document.getElementById('c-mode').textContent = c.mode;
+    document.getElementById('c-mode').className = 'v ' + (c.mode === 'armed' ? 'green' :
+                                                          c.mode === 'off' ? 'red' : 'amber');
+    document.getElementById('c-mult').textContent = fmt.num(c.atr_mult, 1) + '×';
+  }
+  const tbody = document.querySelector('#brain-trust-tbl tbody');
+  tbody.innerHTML = '';
+  if (t && !t.error) {
+    for (const [name, info] of Object.entries(t)) {
+      const state = info.hot ? '<span class="green">HOT</span>' :
+                    info.cold ? '<span class="red">COLD</span>' :
+                    '<span style="color:var(--fg3)">neutral</span>';
+      tbody.innerHTML += `<tr>
+        <td>${name}</td>
+        <td class="right">${fmt.num(info.trust, 2)}</td>
+        <td class="right">${info.n_predictions}</td>
+        <td class="right">${state}</td></tr>`;
+    }
+  }
+}
+
+function renderBrainB(b) {
+  if (!b || b.error) return;
+  const modeEl = document.getElementById('bb-mode');
+  modeEl.textContent = b.mode || '—';
+  modeEl.className = 'v ' + (b.mode === 'armed' ? 'green' : 'amber');
+  const p = b.p_safe;
+  const psEl = document.getElementById('bb-psafe');
+  psEl.textContent = p == null ? '—' : p.toFixed(3);
+  psEl.className = 'v ' + (p == null ? '' :
+                            p >= b.min_safe ? 'green' :
+                            p >= b.min_safe * 0.75 ? 'amber' : 'red');
+  document.getElementById('bb-min').textContent = (b.min_safe != null) ? b.min_safe.toFixed(2) : '—';
+  const modelEl = document.getElementById('bb-model');
+  modelEl.textContent = b.model_ready ? 'ready' : 'not trained';
+  modelEl.className = 'v ' + (b.model_ready ? 'green' : 'red');
+  const tag = document.getElementById('bbTag');
+  if (p == null) { tag.textContent = '—'; tag.className = 'tag'; }
+  else if (p >= b.min_safe) { tag.textContent = 'SAFE'; tag.className = 'tag tag-green'; }
+  else { tag.textContent = 'DANGER'; tag.className = 'tag tag-red'; }
+
+  // Top-6 features by |value| (rough attribution: bigger magnitude = more influential)
+  const feats = b.features || [];
+  const labels = b.feature_labels || [];
+  const tbody = document.querySelector('#bb-feats-tbl tbody');
+  tbody.innerHTML = '';
+  if (feats.length !== labels.length) return;
+  const ranked = feats.map((v, i) => ({label: labels[i], value: v}))
+                      .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
+                      .slice(0, 6);
+  tbody.innerHTML = ranked.map(f => `<tr>
+    <td>${f.label}</td>
+    <td class="right">${f.value.toFixed(3)}</td></tr>`).join('');
+}
+
+function renderBrainD(d) {
+  if (!d || d.error) return;
+  const modeEl = document.getElementById('bd-mode');
+  modeEl.textContent = d.mode || '—';
+  modeEl.className = 'v ' + (d.mode === 'armed' ? 'green' : 'amber');
+  document.getElementById('bd-size').textContent =
+    d.size_multiplier != null ? '×' + d.size_multiplier.toFixed(2) : '—';
+  document.getElementById('bd-agg').textContent =
+    d.aggression != null ? d.aggression.toFixed(2) : '—';
+  document.getElementById('bd-conc').textContent =
+    d.concentration_multiplier != null ? '×' + d.concentration_multiplier.toFixed(2) : '—';
+  const modelEl = document.getElementById('bd-model');
+  modelEl.textContent = d.model_ready ? 'ready' : 'not trained';
+  modelEl.className = 'v ' + (d.model_ready ? 'green' : 'red');
+  const tag = document.getElementById('bdTag');
+  if (d.size_multiplier == null) { tag.textContent = '—'; tag.className = 'tag'; }
+  else if (d.size_multiplier > 1.15) { tag.textContent = 'SCALE UP'; tag.className = 'tag tag-green'; }
+  else if (d.size_multiplier < 0.85) { tag.textContent = 'SCALE DOWN'; tag.className = 'tag tag-red'; }
+  else { tag.textContent = 'NEUTRAL'; tag.className = 'tag'; }
+}
+
+function renderBrainF(f) {
+  if (!f || f.error) return;
+  const modeEl = document.getElementById('bf-mode');
+  modeEl.textContent = f.mode || '—';
+  modeEl.className = 'v ' + (f.mode === 'armed' ? 'green' :
+                              f.mode === 'shadow' ? 'amber' : 'red');
+
+  // Last P(bullish) — color by conviction band
+  const p = f.last_p_bullish;
+  const minP = f.min_prob_to_bump != null ? f.min_prob_to_bump : 0.55;
+  const pEl = document.getElementById('bf-pbull');
+  pEl.textContent = p == null ? '—' : p.toFixed(3);
+  pEl.className = 'v ' + (p == null ? '' :
+                           p >= minP ? 'green' :
+                           p >= 0.45 ? 'amber' :
+                           p >= 0.35 ? '' : 'red');
+
+  document.getElementById('bf-sym').textContent = f.last_symbol || '—';
+
+  // Last bump — sign-colored
+  const bump = f.last_bump;
+  const bEl = document.getElementById('bf-bump');
+  if (bump == null) { bEl.textContent = '—'; bEl.className = 'v'; }
+  else {
+    bEl.textContent = (bump >= 0 ? '+' : '') + bump.toFixed(3);
+    bEl.className = 'v ' + (bump > 0 ? 'green' : bump < 0 ? 'red' : '');
+  }
+
+  document.getElementById('bf-minp').textContent = minP.toFixed(2);
+  document.getElementById('bf-maxbump').textContent =
+    f.max_score_bump != null ? '±' + f.max_score_bump.toFixed(2) : '—';
+  document.getElementById('bf-count').textContent =
+    f.session_bump_count != null ? f.session_bump_count : '—';
+
+  const modelEl = document.getElementById('bf-model');
+  modelEl.textContent = f.model_ready ? 'ready' : 'not trained';
+  modelEl.className = 'v ' + (f.model_ready ? 'green' : 'red');
+
+  // Header tag: overall stance of the last score call
+  const tag = document.getElementById('bfTag');
+  if (f.mode === 'off') { tag.textContent = 'OFF'; tag.className = 'tag'; }
+  else if (p == null) { tag.textContent = '—'; tag.className = 'tag'; }
+  else if (bump != null && bump > 0) { tag.textContent = 'BULLISH'; tag.className = 'tag tag-green'; }
+  else if (bump != null && bump < 0) { tag.textContent = 'WEAK'; tag.className = 'tag tag-red'; }
+  else { tag.textContent = 'NEUTRAL'; tag.className = 'tag'; }
+
+  // Top-6 features by |value|
+  const feats = f.features || [];
+  const labels = f.feature_labels || [];
+  const tbody = document.querySelector('#bf-feats-tbl tbody');
+  tbody.innerHTML = '';
+  if (feats.length !== labels.length || !feats.length) return;
+  const ranked = feats.map((v, i) => ({label: labels[i], value: v}))
+                      .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
+                      .slice(0, 6);
+  tbody.innerHTML = ranked.map(row => `<tr>
+    <td>${row.label}</td>
+    <td class="right">${row.value.toFixed(3)}</td></tr>`).join('');
+}
+
+function renderPositions(p) {
+  const list = document.getElementById('pos-list');
+  document.getElementById('pos-count').textContent = (p ? p.length : 0) + ' open';
+  if (!p || !p.length) {
+    list.innerHTML = '<div style="color:var(--fg3);text-align:center;padding:20px;">No positions</div>';
+    return;
+  }
+  list.innerHTML = p.filter(pos => !pos.error).map(pos => {
+    const wl = pos.gain_pct >= 0 ? 'winning' : 'losing';
+    return `<div class="pos-tile ${wl}">
+      <div class="pos-tile-head">
+        <span class="pos-tile-sym">${pos.symbol}</span>
+        <span class="pos-tile-gain ${pnlClass(pos.gain_pct)}">${pnlSign(pos.gain_pct)}</span>
+      </div>
+      <div class="pos-tile-body">
+        <div>Entry: <b>${fmt.usd(pos.avg_price)}</b></div>
+        <div>Live: <b>${fmt.usd(pos.current_price)}</b></div>
+        <div>ATR: <b>${pos.entry_atr ? fmt.num(pos.entry_atr, 2) : '—'}</b></div>
+        <div>Ch. Stop: <b>${pos.chandelier_stop ? fmt.usd(pos.chandelier_stop) : '—'}</b></div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderProfitMonitor(pm) {
+  const tbody = document.querySelector('#pm-tbl tbody');
+  const empty = document.getElementById('pm-empty');
+  if (!pm || typeof pm !== 'object' || pm.error) {
+    tbody.innerHTML = ''; empty.style.display = 'block'; return;
+  }
+  const entries = Object.entries(pm);
+  document.getElementById('pm-count').textContent = entries.length + ' tracked';
+  if (!entries.length) {
+    tbody.innerHTML = ''; empty.style.display = 'block'; return;
+  }
+  empty.style.display = 'none';
+  tbody.innerHTML = entries.map(([sym, s]) => {
+    let stateClass = '', stateText = 'waiting';
+    if (s.armed) { stateClass = 'green'; stateText = 'ARMED'; }
+    else if (s.touched_profit) { stateClass = 'yellow'; stateText = 'TOUCHED'; }
+    return `<tr>
+      <td><b>${sym}</b></td>
+      <td class="right">${fmt.usd(s.peak_price)}</td>
+      <td class="right ${stateClass}">${stateText}</td>
+      <td class="right">${s.last_seen ? fmt.time(s.last_seen) : '—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderTrades(t) {
+  const tbody = document.querySelector('#trades-tbl tbody');
+  tbody.innerHTML = '';
+  if (!t) return;
+  const rev = t.slice().reverse();
+  for (const tr of rev) {
+    if (tr.error) continue;
+    const sc = tr.action === 'buy' ? 'green' : 'red';
+    tbody.innerHTML += `<tr>
+      <td><b>${tr.symbol}</b></td>
+      <td class="${sc}">${(tr.action||'').toUpperCase()}</td>
+      <td class="right">${fmt.num(tr.qty, 4)}</td>
+      <td class="right">${fmt.usd(tr.price)}</td>
+      <td>${tr.date}</td></tr>`;
+  }
+}
+
+function renderMuted(m) {
+  const tbody = document.querySelector('#muted-tbl tbody');
+  const empty = document.getElementById('muted-empty');
+  tbody.innerHTML = '';
+  if (!m || !m.length) { empty.style.display = 'block'; return; }
+  empty.style.display = 'none';
+  for (const mm of m) {
+    if (mm.error) continue;
+    tbody.innerHTML += `<tr>
+      <td><b>${mm.symbol}</b></td>
+      <td class="right red">${(mm.win_rate * 100).toFixed(0)}%</td>
+      <td class="right red">${fmt.usd(mm.pnl)}</td>
+      <td class="right">${mm.n}</td></tr>`;
+  }
+}
+
+function renderBlacklist(bl) {
+  if (!bl || bl.error) return;
+  const permBox = document.getElementById('permBlChips');
+  if (!bl.permanent || !bl.permanent.length) {
+    permBox.innerHTML = '<span style="color:var(--fg3);font-size:11px;">None</span>';
+  } else {
+    permBox.innerHTML = bl.permanent.map(s =>
+      `<span class="chip perm">${s} <span class="x" onclick="removeBl('${s}')">✕</span></span>`
+    ).join('');
+  }
+  const tempBox = document.getElementById('tempBlChips');
+  if (!bl.temporary || !bl.temporary.length) {
+    tempBox.innerHTML = '<span style="color:var(--fg3);font-size:11px;">None active</span>';
+  } else {
+    tempBox.innerHTML = bl.temporary.map(t =>
+      `<span class="chip temp" title="${t.hours_remaining.toFixed(1)}h remaining">
+        ${t.symbol} <small>${t.hours_remaining.toFixed(1)}h</small>
+        <span class="x" onclick="removeBl('${t.symbol}')">✕</span>
+      </span>`
+    ).join('');
+  }
+}
+
+function renderFloor(f) {
+  if (!f || f.error) return;
+  const feed = document.getElementById('brainFeed');
+  const msgs = (f.feed || []).slice().reverse();
+  feed.innerHTML = msgs.map(m => {
+    const cls = 'feed-item ' + (m.type || 'info');
+    return `<div class="${cls}">
+      <span class="ts">${m.ts_str}</span>
+      <span class="brain">${m.from}</span>
+      <span class="msg">${m.detail}</span>
+    </div>`;
+  }).join('');
+  const c = f.counts || {};
+  document.getElementById('fmInstr').textContent = c.instructions || 0;
+  document.getElementById('fmLessons').textContent = c.lessons || 0;
+  document.getElementById('fmObs').textContent = c.observations || 0;
+  document.getElementById('fmTrain').textContent = c.training || 0;
+  document.getElementById('floorCommsBadge').textContent = (f.feed ? f.feed.length : 0) + ' msgs';
+}
+
+function renderIntel(intel) {
+  const tag = document.getElementById('intelTag');
+  if (!intel || intel.error) {
+    tag.textContent = intel && intel.error ? 'ERROR' : 'OFFLINE';
+    tag.className = 'tag tag-red';
+    return;
+  }
+  tag.textContent = intel.model_ready ? 'MODEL LIVE' : 'LOGGING';
+  tag.className = 'tag ' + (intel.model_ready ? 'tag-green' : '');
+
+  document.getElementById('intelTotal').textContent = intel.total || 0;
+  document.getElementById('intelDone').textContent  = intel.completed || 0;
+  document.getElementById('intelOpen').textContent  = intel.open || 0;
+
+  const wr = intel.recent_win_rate;
+  const wrEl = document.getElementById('intelWR');
+  if (wr != null) {
+    wrEl.textContent = (wr * 100).toFixed(1) + '%';
+    wrEl.style.color = wr >= 0.5 ? 'var(--green)' : 'var(--red)';
+  } else { wrEl.textContent = '—'; wrEl.style.color = ''; }
+
+  const avg = intel.recent_avg_return;
+  const avgEl = document.getElementById('intelAvg');
+  if (avg != null) {
+    avgEl.textContent = (avg >= 0 ? '+' : '') + (avg * 100).toFixed(3) + '%';
+    avgEl.style.color = avg >= 0 ? 'var(--green)' : 'var(--red)';
+  } else { avgEl.textContent = '—'; avgEl.style.color = ''; }
+
+  const modelEl = document.getElementById('intelModel');
+  modelEl.textContent = intel.model_ready ? 'ON' : 'off';
+  modelEl.style.color = intel.model_ready ? 'var(--green)' : 'var(--fg3)';
+
+  // Calibration
+  const calib = intel.calibration;
+  const calibWrap = document.getElementById('intelCalibWrap');
+  if (calib) {
+    calibWrap.style.display = 'block';
+    document.getElementById('intelHighWR').textContent = (calib.high_conf_wr * 100).toFixed(1) + '%';
+    document.getElementById('intelLowWR').textContent  = (calib.low_conf_wr  * 100).toFixed(1) + '%';
+    document.getElementById('intelHighN').textContent = calib.n_high;
+    document.getElementById('intelLowN').textContent  = calib.n_low;
+  } else {
+    calibWrap.style.display = 'none';
+  }
+
+  const symRow = (r) => {
+    const retClass = r.sum_ret >= 0 ? 'green' : 'red';
+    return `<tr>
+      <td><b>${r.symbol}</b></td>
+      <td>${r.n}</td>
+      <td>${(r.wr * 100).toFixed(0)}%</td>
+      <td class="${retClass}">${(r.sum_ret >= 0 ? '+' : '') + (r.sum_ret * 100).toFixed(2)}%</td>
+      <td>${r.size_mult.toFixed(2)}</td>
+    </tr>`;
+  };
+  document.getElementById('intelBestTbl').innerHTML  =
+    (intel.top_symbols || []).map(symRow).join('') ||
+    '<tr><td colspan="5" style="color:var(--fg3);">no completed trades yet</td></tr>';
+  document.getElementById('intelWorstTbl').innerHTML =
+    (intel.worst_symbols || []).map(symRow).join('') ||
+    '<tr><td colspan="5" style="color:var(--fg3);">no completed trades yet</td></tr>';
+
+  const recentRow = (t) => {
+    const retClass = t.return >= 0 ? 'green' : 'red';
+    const pred = t.predicted != null ? t.predicted.toFixed(2) : '—';
+    const size = t.size_mult != null ? t.size_mult.toFixed(2) : '—';
+    return `<tr>
+      <td><b>${t.symbol}</b></td>
+      <td style="color:var(--fg3);">${t.entry_time}</td>
+      <td class="${retClass}">${(t.return >= 0 ? '+' : '') + (t.return * 100).toFixed(3)}%</td>
+      <td style="color:var(--fg3);">${t.reason}</td>
+      <td>${pred}</td>
+      <td>${size}</td>
+    </tr>`;
+  };
+  document.getElementById('intelRecentTbl').innerHTML =
+    (intel.recent_trades || []).map(recentRow).join('') ||
+    '<tr><td colspan="6" style="color:var(--fg3);">no trades logged yet</td></tr>';
+}
+
+function renderSettings(s) {
+  if (!s) return;
+  const activeEl = document.activeElement;
+  const setIf = (id, val) => {
+    const el = document.getElementById(id);
+    if (el && el !== activeEl && val != null) el.value = val;
+  };
+  setIf('sChandMode', s.chandelier_mode);
+  setIf('sChandAtr', s.chandelier_atr_mult);
+  setIf('sChandHold', s.chandelier_min_hold_secs);
+  setIf('sBtMode', s.backtest_brain_mode);
+  setIf('sBtThresh', s.backtest_min_win_rate);
+  setIf('sBtSamples', s.backtest_min_samples);
+  setIf('sBbMode', s.brain_b_mode);
+  setIf('sBbMin', s.brain_b_min_safe);
+  setIf('sBdMode', s.brain_d_mode);
+  setIf('sBfMode', s.brain_f_mode);
+  setIf('sBfMaxBump', s.brain_f_max_score_bump);
+  setIf('sBfMinProb', s.brain_f_min_prob_to_bump);
+  setIf('sConsecLoss', s.consec_loss_cooldown);
+  setIf('sCoolSecs', s.cooldown_seconds);
+  setIf('sDailyLock', s.daily_profit_lock_pct);
+  setIf('sPsMute', s.persymbol_mute_winrate);
+  setIf('sPsMin', s.persymbol_min_trades);
+}
+
+function renderFlags(f) {
+  if (!f) return;
+  const bits = [];
+  if (f.paused) bits.push('<span class="tag tag-amber">PAUSED</span>');
+  if (f.emergency_stop) bits.push('<span class="tag tag-red">EMERGENCY STOP</span>');
+  if (f.sell_all_pending) bits.push('<span class="tag tag-amber">SELL-ALL PENDING</span>');
+  document.getElementById('flags').innerHTML = bits.length ? bits.join(' ') : 'no flags active';
+}
+
+let _floorHist = [], _floorHistIdx = -1;
+function sendFloorMsg() {
+  const inp = document.getElementById('floorInput');
+  const text = (inp.value || '').trim();
+  if (!text) return;
+  _floorHist.unshift(text);
+  if (_floorHist.length > 50) _floorHist.length = 50;
+  _floorHistIdx = -1;
+  send({type: 'trading_floor_msg', text: text});
+  inp.value = '';
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const inp = document.getElementById('floorInput');
+  if (inp) inp.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowUp') { e.preventDefault();
+      if (_floorHistIdx < _floorHist.length-1) {
+        _floorHistIdx++; inp.value = _floorHist[_floorHistIdx];
+      }
+    } else if (e.key === 'ArrowDown') { e.preventDefault();
+      if (_floorHistIdx > 0) { _floorHistIdx--; inp.value = _floorHist[_floorHistIdx]; }
+      else { _floorHistIdx = -1; inp.value = ''; }
+    }
+  });
+});
+
+connect();
+</script>
+</body>
+</html>
