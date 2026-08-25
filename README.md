@@ -36,10 +36,14 @@ The dashboard ↔ bot bridge and buy-cycle stability got a substantial overhaul:
 - **Dead `renderBrains()`** removed; `--cyan` palette token added.
 
 ### Bot stability
-- **`buy_stocks` hang fix** (root-cause found via `py-spy dump`): three threads were contending on the same KSB internal lock — `observe_market()` in the buy path, `brain_suite_snapshot()` in the WS `_build_state`, and CapitalAllocation's `decide_multiplier`. Both external entry points now run in soft-timeout threads (5s for `observe_market`, 2s for `brain_suite_snapshot`) so a slow KSB tick can no longer wedge the buy cycle.
+- **KSB brain-suite serializer** (fixes catastrophic thread leak — py-spy showed 200+ daemon threads all wedged on `KSB.snapshot()`): every KSB entry from this bot now funnels through a single-worker `ThreadPoolExecutor` gated by an inflight mutex. If a KSB call is already running (training, retrain, slow snapshot) callers get `(False, None)` immediately and fall back to cache / skip. Worst-case ever-leaked thread count is 1, not hundreds.
+- **Trade during training** — the KSB brain suite trains in-process and holds its internal lock for tens of seconds. Both hot paths now degrade gracefully:
+  - `buy_stocks` KSB feed block skips itself when `_KSB_INFLIGHT` shows a call in flight (`[KSB feed] brain suite busy — skipping feed`).
+  - `unified_buy_gate` (score gate) uses `_ksb_call(..., timeout=2s)`; if KSB is training, it fail-opens with `{'approved': True, 'reason': 'KSB busy (training) — fail-open'}` so the strategy score alone decides the trade — same posture as `KSB_GATE_MODE='off'`.
 - **Pretrain crash under KSB fixed**: `pretrain_all_brains()` short-circuits when KSB owns the brains; error-log path is `getattr`-safe. No more `'RiskSentinel' object has no attribute 'name'`.
 - **Network-timeout guards** on the KSB feed loop (45s wall-clock deadline, capped at 25 symbols) and on the SPY/VIX `yf.download` calls (`timeout=15` / `timeout=10`).
-- **Settings persistence**: `manager_strictness` now round-trips through `~/.alpaca_bot_settings.json` and re-applies at startup via `MANAGER_BRAIN.set_strictness()`.
+- **Settings persistence**: `manager_strictness` now round-trips through `~/.alpaca_bot_settings.json` and re-applies at startup via `MANAGER_BRAIN.set_strictness()`, and appears in the WS `state.settings` payload so the dropdown actually shows the current value.
+- **Dashboard WS broadcast interval** raised 1.0 → 3.0 s so ticks can never outrun KSB call rate.
 
 ### Environment overrides
 
