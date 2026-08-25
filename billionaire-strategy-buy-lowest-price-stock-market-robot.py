@@ -13791,7 +13791,21 @@ def buy_stocks(symbols_to_buy_list, lock):
         try:
             _ksb_prices = {}
             _ksb_indic = {}
-            for _s in (symbols_to_buy_list or [])[:KSB.BRAIN_SYMBOLS_MAX]:
+            # Wall-clock deadline: the per-symbol Alpaca/yfinance fetches inside
+            # this loop have no individual timeout, so a slow upstream API can
+            # freeze the buy-cycle thread for minutes. Cap the whole feed at
+            # 45s and cap symbol count at min(list, BRAIN_SYMBOLS_MAX, 25) so
+            # the brain suite gets a partial snapshot instead of blocking.
+            _ksb_feed_deadline = time.time() + 45.0
+            _ksb_cap = min(len(symbols_to_buy_list or []),
+                           int(getattr(KSB, 'BRAIN_SYMBOLS_MAX', 25) or 25),
+                           25)
+            _ksb_slice = (symbols_to_buy_list or [])[:_ksb_cap]
+            for _s in _ksb_slice:
+                if time.time() > _ksb_feed_deadline:
+                    print(f"[KSB feed] deadline hit — fed {len(_ksb_prices)} / "
+                          f"{len(_ksb_slice)} symbols, skipping the rest")
+                    break
                 try:
                     _px = _fetch_current_price(_s)
                     if _px and _px > 0: _ksb_prices[_s] = float(_px)
@@ -13860,7 +13874,7 @@ def buy_stocks(symbols_to_buy_list, lock):
     # ═══ BRAIN SUITE: refresh volatility regime each cycle ═══
     try:
         _spy = yf.download("SPY", period="10d", progress=False,
-                           auto_adjust=False, threads=False)
+                           auto_adjust=False, threads=False, timeout=15)
         if _spy is not None and len(_spy) >= 6:
             _spy_close = _spy["Close"].values.astype(float).flatten()
             _spy_high  = _spy["High"].values.astype(float).flatten()
@@ -13871,7 +13885,7 @@ def buy_stocks(symbols_to_buy_list, lock):
             _vix = None
             try:
                 _vix_df = yf.download("^VIX", period="2d", progress=False,
-                                      auto_adjust=False, threads=False)
+                                      auto_adjust=False, threads=False, timeout=10)
                 if _vix_df is not None and len(_vix_df) > 0:
                     _vix = float(_vix_df["Close"].values.flatten()[-1])
             except Exception: pass
