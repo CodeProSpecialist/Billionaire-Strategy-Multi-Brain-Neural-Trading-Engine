@@ -704,85 +704,140 @@ td.right, th.right { text-align: right; }
 <div class="footer" id="footer">Last update: never</div>
 
 <script>
-// Connect through Caddy's /ws reverse-proxy on the SAME host/port the page
-// was loaded from. This works both locally (http://localhost:8080/) and
-// remotely (http://<server-ip>:8080/). Falls back to direct ws://host:8765
-// if the page was opened as a file:// URL (no location.host).
+// ────────────────────────────────────────────────────────────────────────
+// WebSocket client (rewritten from scratch).
 //
-// P3.17 token auth: if the bot's BOT_DASHBOARD_TOKEN env is set, the WS
-// server requires ?token=<value>. The token can be supplied via either
-//   (a) URL query on the dashboard page itself: index.html?token=abc
-//   (b) localStorage.setItem('dashToken', 'abc') in dev tools
-// Empty token → connect without ?token= (backend defaults to no-auth then).
-function _getDashToken() {
-  const q = new URLSearchParams(window.location.search).get('token');
-  if (q) return q;
-  try { return localStorage.getItem('dashToken') || ''; } catch(e) { return ''; }
-}
-function _wsUrl() {
-  const tok = _getDashToken();
-  const qs = tok ? `?token=${encodeURIComponent(tok)}` : '';
-  const params = new URLSearchParams(window.location.search);
-  // Explicit override: ?ws=ws://host:port  (wins over everything)
-  const wsOverride = params.get('ws');
-  if (wsOverride) return wsOverride + qs;
-  // Reverse-proxy mode: ?proxy=1 → same-origin /ws (Caddy etc.)
-  const wsPort = params.get('wsPort') || '8765';
-  if (params.get('proxy') === '1' && location.host) {
-    return `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws${qs}`;
-  }
-  // Default: connect directly to the bot's WS on <hostname>:8765.
-  // Works from file://, from a plain static server on any port, and from
-  // Caddy setups where you'd rather point at the bot directly.
-  const host = location.hostname || '127.0.0.1';
-  const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${scheme}//${host}:${wsPort}${qs}`;
-}
-let WS_URL = _wsUrl();
-let ws = null, reconnectTimer = null;
+// URL resolution priority (first non-empty wins):
+//   1. ?ws=ws://host:port         explicit URL override
+//   2. ?proxy=1                    same-origin /ws (Caddy reverse-proxy)
+//   3. default                     ws(s)://<hostname>:<wsPort||8765>
+//
+// Token auth (server: BOT_DASHBOARD_TOKEN env):
+//   • URL query   → ?token=abc
+//   • localStorage → localStorage.setItem('dashToken','abc')
+//   • no token    → connect without ?token= (open server)
+//
+// Exposed globals: WS.connect() / WS.send(obj) / WS.status()
+// The rest of the page keeps calling send({type:...}) — kept as a shim.
+// ────────────────────────────────────────────────────────────────────────
+const WS = (() => {
+  const RECONNECT_MS       = 3000;
+  const CONNECT_TIMEOUT_MS = 8000;
+  const $ = (id) => document.getElementById(id);
+  const params = () => new URLSearchParams(window.location.search);
 
-function connect() {
-  if (ws) { try { ws.close(); } catch(e){} }
-  WS_URL = _wsUrl();   // re-read token in case it changed
-  console.log('[dashboard] connecting to', WS_URL);
-  const shortUrl = WS_URL.replace(/\?token=[^&]+/, '?token=***');
-  document.getElementById('conn-txt').textContent = 'connecting → ' + shortUrl;
-  try {
-    ws = new WebSocket(WS_URL);
-  } catch (err) {
-    document.getElementById('conn-txt').textContent = 'bad WS URL: ' + err.message;
-    console.error('[dashboard] WebSocket ctor failed:', err);
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(connect, 5000);
-    return;
+  function token() {
+    const q = params().get('token');
+    if (q) return q;
+    try { return localStorage.getItem('dashToken') || ''; }
+    catch (e) { return ''; }
   }
-  ws.onopen = () => {
-    document.getElementById('conn-dot').classList.add('on');
-    document.getElementById('conn-txt').textContent = 'connected → ' + shortUrl;
-  };
-  ws.onclose = (ev) => {
-    document.getElementById('conn-dot').classList.remove('on');
-    // 4401 = our custom "unauthorized" close code from the backend
-    const label = (ev && ev.code === 4401)
-      ? 'unauthorized (bad or missing token) → ' + shortUrl
-      : `disconnected (code ${ev && ev.code}) — retrying → ${shortUrl}`;
-    document.getElementById('conn-txt').textContent = label;
-    console.log('[dashboard] closed', ev && ev.code, ev && ev.reason);
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(connect, 3000);
-  };
-  ws.onerror = (e) => { console.error('[dashboard] ws error', e); };
-  ws.onmessage = (e) => {
-    try {
-      const msg = JSON.parse(e.data);
-      if (msg.type === 'state') render(msg);
-    } catch(err) { console.error('bad msg', err); }
-  };
-}
-function send(obj) {
-  if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
-  else alert('Not connected to bot');
-}
+
+  function url() {
+    const p = params();
+    const tok = token();
+    const qs  = tok ? `?token=${encodeURIComponent(tok)}` : '';
+    const override = p.get('ws');
+    if (override) return override + (override.includes('?') ? '' : qs);
+    const port = p.get('wsPort') || '8765';
+    if (p.get('proxy') === '1' && location.host) {
+      const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${scheme}//${location.host}/ws${qs}`;
+    }
+    const host   = location.hostname || '127.0.0.1';
+    const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${scheme}//${host}:${port}${qs}`;
+  }
+
+  let sock = null, retryTimer = null, connectTimer = null, currentUrl = '';
+
+  function setStatus(text, live) {
+    const t = $('conn-txt'); if (t) t.textContent = text;
+    const d = $('conn-dot');
+    if (d) d.classList[live ? 'add' : 'remove']('on');
+  }
+
+  function scheduleRetry() {
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = setTimeout(connect, RECONNECT_MS);
+  }
+
+  function connect() {
+    if (retryTimer)   { clearTimeout(retryTimer);   retryTimer   = null; }
+    if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
+    if (sock) { try { sock.close(); } catch(e){} sock = null; }
+
+    currentUrl = url();
+    const shown = currentUrl.replace(/token=[^&]+/, 'token=***');
+    console.log('[ws] connecting →', currentUrl);
+    setStatus(`connecting → ${shown}`, false);
+
+    let s;
+    try { s = new WebSocket(currentUrl); }
+    catch (err) {
+      console.error('[ws] bad URL:', err);
+      setStatus(`bad WS URL: ${err.message}`, false);
+      scheduleRetry();
+      return;
+    }
+    sock = s;
+
+    connectTimer = setTimeout(() => {
+      if (s.readyState !== WebSocket.OPEN) {
+        console.warn('[ws] connect timeout');
+        try { s.close(); } catch(e){}
+      }
+    }, CONNECT_TIMEOUT_MS);
+
+    s.onopen = () => {
+      if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
+      console.log('[ws] open');
+      setStatus(`connected → ${shown}`, true);
+    };
+    s.onmessage = (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); }
+      catch (err) { console.error('[ws] bad frame', err); return; }
+      if (msg && msg.type === 'state') { try { render(msg); } catch(e){ console.error(e); } }
+    };
+    s.onerror = (e) => console.error('[ws] error', e);
+    s.onclose = (ev) => {
+      if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
+      const code = ev && ev.code;
+      console.log('[ws] closed', code, ev && ev.reason);
+      if (code === 4401) {
+        setStatus(`unauthorized (bad/missing token) → ${shown}`, false);
+      } else {
+        setStatus(`disconnected (code ${code}) — retrying → ${shown}`, false);
+      }
+      sock = null;
+      scheduleRetry();
+    };
+  }
+
+  function send(obj) {
+    if (!sock || sock.readyState !== WebSocket.OPEN) {
+      alert('Not connected to bot');
+      return false;
+    }
+    try { sock.send(JSON.stringify(obj)); return true; }
+    catch (err) { console.error('[ws] send failed', err); return false; }
+  }
+
+  function status() {
+    return { url: currentUrl,
+             readyState: sock ? sock.readyState : -1,
+             connected: !!(sock && sock.readyState === WebSocket.OPEN) };
+  }
+
+  return { connect, send, status };
+})();
+
+// Back-compat shims for the rest of the page:
+function send(obj) { return WS.send(obj); }
+function connect() { return WS.connect(); }
+// Expose for console debugging.
+window.WS = WS;
 
 function doPause() { send({type: 'robot_pause'}); }
 function doResume() { send({type: 'robot_resume'}); }
