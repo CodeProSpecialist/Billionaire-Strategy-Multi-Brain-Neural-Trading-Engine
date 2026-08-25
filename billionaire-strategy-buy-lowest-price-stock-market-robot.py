@@ -4220,7 +4220,15 @@ except ImportError as _e:
 # ---------------- Pretraining orchestrator + brain-suite snapshot -------------
 def pretrain_all_brains():
     """Kalshi-style: on bot boot, warm-start every brain from synthetic data.
-    Safe to call multiple times — each brain checks its .pretrained flag."""
+    Safe to call multiple times — each brain checks its .pretrained flag.
+    Short-circuits when KSB owns the brains: KSB runs its own pretraining
+    (or loads saved state), and its brain objects don't share the legacy
+    _BaseBrain API (no .name, no .pretrain(n)), so calling this against
+    them raises AttributeError."""
+    if _KSB_AVAILABLE:
+        _brain_log("BRAIN_SUITE",
+                   "KSB owns the brains — skipping legacy pretrain pass")
+        return
     _brain_log("BRAIN_SUITE", "starting synthetic pretraining pass…")
     for b, n in [
         (VOLATILITY_REGIME, 800),  (MANAGER_BRAIN, 400),
@@ -4228,10 +4236,14 @@ def pretrain_all_brains():
         (RISK_SENTINEL, 100),      (CORRELATION_GUARD, 100),
         (DAYTRADE_BRAIN, 2500),    (CHANDELIER_BRAIN, 300),
     ]:
+        nm = getattr(b, 'name', type(b).__name__)
         try:
+            if not hasattr(b, 'pretrain'):
+                _brain_log(nm, "no pretrain() — skipped")
+                continue
             b.pretrain(n)
         except Exception as e:
-            _brain_log(b.name, f"pretrain failed: {e}")
+            _brain_log(nm, f"pretrain failed: {e}")
     _brain_log("BRAIN_SUITE", "pretraining pass complete")
 
 
@@ -16603,11 +16615,11 @@ def print_portfolio_gain_summary(force=False):
 # HTML is the safety layer for accidental clicks.
 
 DASHBOARD_WS_ENABLED = True
-DASHBOARD_WS_HOST = '127.0.0.1'      # bind to localhost only. Caddy on :8080 reverse-proxies
-                                     # /ws to this port, so remote browsers connect via Caddy
-                                     # (with basicauth) — do NOT change to '0.0.0.0' unless you
-                                     # want the raw, unauthenticated WS exposed on the network.
-DASHBOARD_WS_PORT = 8765             # SAME PORT AS KALSHI dashboard (do not run both bots simultaneously)
+# Bind host: default 127.0.0.1 (localhost only, safe with Caddy reverse-proxy
+# on :8080). Set BOT_DASHBOARD_HOST=0.0.0.0 in the env to serve directly from
+# a web server / expose on the LAN — combine with BOT_DASHBOARD_TOKEN for auth.
+DASHBOARD_WS_HOST = os.environ.get('BOT_DASHBOARD_HOST', '127.0.0.1').strip() or '127.0.0.1'
+DASHBOARD_WS_PORT = int(os.environ.get('BOT_DASHBOARD_PORT', '8765'))
 DASHBOARD_BROADCAST_INTERVAL_SECS = 1.0
 DASHBOARD_THINKING_LOG_MAX = 200     # ring-buffer size
 
