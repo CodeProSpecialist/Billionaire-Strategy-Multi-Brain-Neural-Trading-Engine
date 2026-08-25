@@ -16629,10 +16629,11 @@ def print_portfolio_gain_summary(force=False):
 # HTML is the safety layer for accidental clicks.
 
 DASHBOARD_WS_ENABLED = True
-# Bind host: default 127.0.0.1 (localhost only, safe with Caddy reverse-proxy
-# on :8080). Set BOT_DASHBOARD_HOST=0.0.0.0 in the env to serve directly from
-# a web server / expose on the LAN — combine with BOT_DASHBOARD_TOKEN for auth.
-DASHBOARD_WS_HOST = os.environ.get('BOT_DASHBOARD_HOST', '127.0.0.1').strip() or '127.0.0.1'
+# Bind host: default 0.0.0.0 (all interfaces) so the dashboard is reachable
+# from other machines / a browser served via a plain HTTP server. Override
+# with BOT_DASHBOARD_HOST=127.0.0.1 to restrict to localhost. Set
+# BOT_DASHBOARD_TOKEN=<secret> whenever binding beyond loopback.
+DASHBOARD_WS_HOST = os.environ.get('BOT_DASHBOARD_HOST', '0.0.0.0').strip() or '0.0.0.0'
 DASHBOARD_WS_PORT = int(os.environ.get('BOT_DASHBOARD_PORT', '8765'))
 DASHBOARD_BROADCAST_INTERVAL_SECS = 1.0
 DASHBOARD_THINKING_LOG_MAX = 200     # ring-buffer size
