@@ -13855,9 +13855,19 @@ def buy_stocks(symbols_to_buy_list, lock):
             # below via VOLATILITY_REGIME.classify(...) which writes into
             # the same KSB regime state. Do NOT reference _spy_ret_5d here —
             # it isn't computed until the next block runs.
-            # Cycle observation
-            try: KSB.TRADING_FLOOR.observe_market()
-            except Exception: pass
+            # Cycle observation — wrapped in a soft-timeout thread. py-spy
+            # showed observe_market() taking the same KSB snapshot lock that
+            # CapitalAllocation, dashboard, and buy_stocks all fight over;
+            # a slow snapshot inside KSB wedged the buy thread for 180s+.
+            # If observe_market can't return in 5s we skip it this cycle.
+            def _obs_call():
+                try: KSB.TRADING_FLOOR.observe_market()
+                except Exception: pass
+            _obs_t = _brain_threading.Thread(target=_obs_call, daemon=True,
+                                             name='ksb-observe-market')
+            _obs_t.start(); _obs_t.join(timeout=5.0)
+            if _obs_t.is_alive():
+                print("[KSB feed] observe_market > 5s — skipping this cycle")
         except Exception as _e:
             # P1.6: log the traceback so silent breakage is diagnosable.
             # Rate-limited via a module-level flag: print traceback the FIRST
@@ -17350,9 +17360,21 @@ class DashboardWSEngine:
         except Exception as e:
             state['intel'] = {'error': str(e)}
 
-        # Kalshi-style brain suite
+        # Kalshi-style brain suite — snapshot inside a soft-timeout thread
+        # to keep the WS broadcast from wedging when the KSB internal lock
+        # is held by observe_market / CapitalAllocationEngine (see py-spy).
         try:
-            state['brain_suite'] = brain_suite_snapshot()
+            _snap_result = [None]
+            def _do_snap():
+                try: _snap_result[0] = brain_suite_snapshot()
+                except Exception as _e: _snap_result[0] = {'error': str(_e)}
+            _snap_t = threading.Thread(target=_do_snap, daemon=True,
+                                       name='ws-brain-snap')
+            _snap_t.start(); _snap_t.join(timeout=2.0)
+            if _snap_t.is_alive():
+                state['brain_suite'] = {'error': 'snapshot timeout (>2s)'}
+            else:
+                state['brain_suite'] = _snap_result[0] or {'error': 'no data'}
             # P3.15: enrich with live scheduler timestamps so the HTML can
             # show "last retrain: 12m ago" / "next tick: in 23h 41m" instead
             # of misleading static text.
