@@ -744,23 +744,34 @@ let ws = null, reconnectTimer = null;
 function connect() {
   if (ws) { try { ws.close(); } catch(e){} }
   WS_URL = _wsUrl();   // re-read token in case it changed
-  document.getElementById('conn-txt').textContent = 'connecting…';
-  ws = new WebSocket(WS_URL);
+  console.log('[dashboard] connecting to', WS_URL);
+  const shortUrl = WS_URL.replace(/\?token=[^&]+/, '?token=***');
+  document.getElementById('conn-txt').textContent = 'connecting → ' + shortUrl;
+  try {
+    ws = new WebSocket(WS_URL);
+  } catch (err) {
+    document.getElementById('conn-txt').textContent = 'bad WS URL: ' + err.message;
+    console.error('[dashboard] WebSocket ctor failed:', err);
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, 5000);
+    return;
+  }
   ws.onopen = () => {
     document.getElementById('conn-dot').classList.add('on');
-    document.getElementById('conn-txt').textContent = 'connected';
+    document.getElementById('conn-txt').textContent = 'connected → ' + shortUrl;
   };
   ws.onclose = (ev) => {
     document.getElementById('conn-dot').classList.remove('on');
     // 4401 = our custom "unauthorized" close code from the backend
     const label = (ev && ev.code === 4401)
-      ? 'unauthorized (bad or missing token)'
-      : 'disconnected — retrying…';
+      ? 'unauthorized (bad or missing token) → ' + shortUrl
+      : `disconnected (code ${ev && ev.code}) — retrying → ${shortUrl}`;
     document.getElementById('conn-txt').textContent = label;
+    console.log('[dashboard] closed', ev && ev.code, ev && ev.reason);
     if (reconnectTimer) clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(connect, 3000);
   };
-  ws.onerror = () => {};
+  ws.onerror = (e) => { console.error('[dashboard] ws error', e); };
   ws.onmessage = (e) => {
     try {
       const msg = JSON.parse(e.data);
