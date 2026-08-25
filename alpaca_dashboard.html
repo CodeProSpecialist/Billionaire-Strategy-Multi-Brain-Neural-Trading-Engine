@@ -726,17 +726,17 @@ function _wsUrl() {
   // Explicit override: ?ws=ws://host:port  (wins over everything)
   const wsOverride = params.get('ws');
   if (wsOverride) return wsOverride + qs;
-  // Direct-connect mode: ?direct=1  → ws://<hostname>:<wsPort or 8765>
-  // Use this when the page is served by a plain webserver (not Caddy).
-  const wantDirect = params.get('direct') === '1' || !location.host;
+  // Reverse-proxy mode: ?proxy=1 → same-origin /ws (Caddy etc.)
   const wsPort = params.get('wsPort') || '8765';
-  if (wantDirect) {
-    const host = location.hostname || '127.0.0.1';
-    const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${scheme}//${host}:${wsPort}${qs}`;
+  if (params.get('proxy') === '1' && location.host) {
+    return `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws${qs}`;
   }
-  // Default: connect via same-origin /ws reverse-proxy (Caddy etc.)
-  return `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws${qs}`;
+  // Default: connect directly to the bot's WS on <hostname>:8765.
+  // Works from file://, from a plain static server on any port, and from
+  // Caddy setups where you'd rather point at the bot directly.
+  const host = location.hostname || '127.0.0.1';
+  const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${scheme}//${host}:${wsPort}${qs}`;
 }
 let WS_URL = _wsUrl();
 let ws = null, reconnectTimer = null;
