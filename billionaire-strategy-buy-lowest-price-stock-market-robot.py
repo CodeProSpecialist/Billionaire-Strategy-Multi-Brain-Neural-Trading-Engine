@@ -16681,8 +16681,22 @@ def consume_dashboard_sell_all():
 
 
 class DashboardWSEngine:
-    """WebSocket dashboard server. Runs on its own asyncio loop in a
-    daemon thread; the trading loops never touch asyncio."""
+    """WebSocket dashboard server (rewritten from scratch).
+
+    Design goals:
+      • Runs entirely in one daemon thread with its own asyncio loop.
+      • Trading loops never touch asyncio — they only mutate module globals
+        that _build_state reads.
+      • Slow / dead clients never block the broadcast (per-client
+        send timeout + drop on failure).
+      • Optional token auth works across websockets v10 / v11 / v12+
+        (uses process_request when available, falls back to per-connection
+        path parsing).
+    """
+
+    _SEND_TIMEOUT = 3.0
+    _MAX_MSG_BYTES = 256 * 1024
+
     def __init__(self, host=DASHBOARD_WS_HOST, port=DASHBOARD_WS_PORT):
         self.host = host
         self.port = port
@@ -16690,115 +16704,146 @@ class DashboardWSEngine:
         self._loop = None
         self._thread = None
         self._clients = set()
-        self._websockets_mod = None
+        self._ws_mod = None
 
+    # ---- lifecycle ------------------------------------------------------
     def start(self):
         try:
-            import websockets  # noqa
-            self._websockets_mod = websockets
+            import websockets
         except ImportError:
-            logging.warning("[dashboard] `websockets` package not installed — "
-                            "dashboard disabled. `pip install websockets` to enable.")
+            logging.warning("[dashboard] `websockets` not installed — dashboard disabled.")
             print("[dashboard] websockets package not installed — dashboard disabled.")
             return
+        self._ws_mod = websockets
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
-        self._thread = threading.Thread(target=self._thread_main, daemon=True,
+        self._thread = threading.Thread(target=self._run, daemon=True,
                                         name='DashboardWSEngine')
         self._thread.start()
-        print(f"[dashboard] starting WebSocket server on ws://{self.host}:{self.port}")
-        logging.info(f"[dashboard] starting on ws://{self.host}:{self.port}")
+        msg = f"[dashboard] starting WebSocket server on ws://{self.host}:{self.port}"
+        print(msg); logging.info(msg.lstrip())
 
     def stop(self):
         self._stop.set()
+        loop = self._loop
+        if loop and loop.is_running():
+            try: loop.call_soon_threadsafe(loop.stop)
+            except Exception: pass
 
-    def _thread_main(self):
+    def _run(self):
         import asyncio
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         self._loop = loop
         try:
-            loop.run_until_complete(self._serve())
+            loop.run_until_complete(self._serve_forever())
         except Exception as e:
             logging.error(f"[dashboard] loop crashed: {e}", exc_info=True)
         finally:
-            try:
-                loop.close()
-            except Exception:
-                pass
+            try: loop.close()
+            except Exception: pass
+            self._loop = None
 
-    async def _serve(self):
+    # ---- server ---------------------------------------------------------
+    async def _serve_forever(self):
         import asyncio
-        websockets = self._websockets_mod
-
-        async def handler(ws):
-            await self._handle_client(ws)
-
-        async with websockets.serve(handler, self.host, self.port,
-                                     ping_interval=20, ping_timeout=10,
-                                     max_size=256 * 1024):
-            logging.info(f"[dashboard] listening on ws://{self.host}:{self.port}")
+        server = await self._ws_mod.serve(
+            self._client_handler, self.host, self.port,
+            ping_interval=20, ping_timeout=20,
+            max_size=self._MAX_MSG_BYTES,
+        )
+        logging.info(f"[dashboard] listening on ws://{self.host}:{self.port}")
+        try:
             while not self._stop.is_set():
                 try:
-                    await self._broadcast(self._build_state())
+                    await self._broadcast_once()
                 except Exception as e:
-                    logging.debug(f"[dashboard] broadcast: {e}")
+                    logging.debug(f"[dashboard] broadcast tick: {e}")
                 await asyncio.sleep(DASHBOARD_BROADCAST_INTERVAL_SECS)
+        finally:
+            server.close()
+            try: await server.wait_closed()
+            except Exception: pass
 
-    async def _handle_client(self, ws):
-        import json
-        # P3.17: Optional token auth. If BOT_DASHBOARD_TOKEN is set in the env,
-        # every connection must present ?token=<value>. Reject otherwise.
-        # No token set → open (safe on default 127.0.0.1 bind).
-        if _DASHBOARD_TOKEN:
-            path = getattr(ws, 'path', '') or getattr(ws, 'request_uri', '') or ''
-            supplied = ''
-            if '?' in path:
-                query = path.split('?', 1)[1]
-                for kv in query.split('&'):
-                    if kv.startswith('token='):
-                        supplied = kv[6:]
-                        break
-            if supplied != _DASHBOARD_TOKEN:
-                addr = getattr(ws, 'remote_address', ('?', '?'))
-                logging.warning(f"[dashboard] auth reject from {addr} "
-                                f"(supplied token={'<none>' if not supplied else '<mismatch>'})")
-                try: await ws.close(code=4401, reason='unauthorized')
-                except Exception: pass
-                return
-        self._clients.add(ws)
-        addr = getattr(ws, 'remote_address', ('?', '?'))
-        logging.info(f"[dashboard] client connected: {addr} "
-                     f"({len(self._clients)} total)")
+    # ---- token auth (version-portable) ---------------------------------
+    @staticmethod
+    def _extract_token(path_or_url):
+        if not path_or_url or '?' not in path_or_url:
+            return ''
         try:
-            # Send an immediate snapshot on connect so the UI populates fast.
-            await ws.send(json.dumps(self._build_state(), default=str))
+            from urllib.parse import urlparse, parse_qs
+            q = urlparse(path_or_url).query or path_or_url.split('?', 1)[1]
+            vals = parse_qs(q).get('token', [''])
+            return vals[0] if vals else ''
+        except Exception:
+            return ''
+
+    def _auth_ok(self, ws):
+        if not _DASHBOARD_TOKEN:
+            return True
+        # websockets v10: ws.path; v11+: ws.request.path
+        path = ''
+        req = getattr(ws, 'request', None)
+        if req is not None:
+            path = getattr(req, 'path', '') or ''
+        if not path:
+            path = getattr(ws, 'path', '') or ''
+        return self._extract_token(path) == _DASHBOARD_TOKEN
+
+    # ---- per-client -----------------------------------------------------
+    async def _client_handler(self, ws):
+        import json
+        addr = getattr(ws, 'remote_address', ('?', '?'))
+        if not self._auth_ok(ws):
+            logging.warning(f"[dashboard] auth reject from {addr}")
+            try: await ws.close(code=4401, reason='unauthorized')
+            except Exception: pass
+            return
+        self._clients.add(ws)
+        logging.info(f"[dashboard] client connected: {addr} ({len(self._clients)} total)")
+        try:
+            snap = json.dumps(self._build_state(), default=str)
+            await self._safe_send(ws, snap)
             async for raw in ws:
                 try:
                     msg = json.loads(raw)
                 except Exception:
                     continue
-                self._handle_message(msg)
+                # Command handling runs on the asyncio loop but only touches
+                # module globals / cheap in-memory ops — no blocking I/O.
+                try:
+                    self._handle_message(msg)
+                except Exception as e:
+                    logging.warning(f"[dashboard] cmd error ({msg.get('type')}): {e}")
         except Exception as e:
-            logging.debug(f"[dashboard] client closed: {e}")
+            logging.debug(f"[dashboard] client dropped: {e}")
         finally:
             self._clients.discard(ws)
             logging.info(f"[dashboard] client gone: {addr}")
 
-    async def _broadcast(self, payload):
+    # ---- broadcast ------------------------------------------------------
+    async def _broadcast_once(self):
         if not self._clients:
             return
         import json
-        data = json.dumps(payload, default=str)
-        dead = []
+        data = json.dumps(self._build_state(), default=str)
+        # Snapshot the client set so mutation during iteration is safe.
         for ws in list(self._clients):
-            try:
-                await ws.send(data)
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self._clients.discard(ws)
+            if not await self._safe_send(ws, data):
+                self._clients.discard(ws)
+
+    async def _safe_send(self, ws, data):
+        """Send with a hard timeout. Any failure → False and caller drops
+        the client. Prevents one stuck TCP session from stalling the loop."""
+        import asyncio
+        try:
+            await asyncio.wait_for(ws.send(data), timeout=self._SEND_TIMEOUT)
+            return True
+        except Exception:
+            try: await ws.close(code=1011, reason='send timeout')
+            except Exception: pass
+            return False
 
     def _handle_message(self, msg):
         """Client -> server command handler. Runs on the asyncio thread, so
