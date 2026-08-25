@@ -9004,7 +9004,18 @@ def chair_decide(symbol, notional_requested, current_regime=None,
             score = float(strategy_score)
         else:
             score = 6.0 + float(ml_adjustment or 0.0)
-        gate = KSB.unified_buy_gate(symbol, notional_requested, score)
+        # Route through _ksb_call so if the brain suite is retraining
+        # (or otherwise wedged), we fail-open the gate instead of blocking
+        # the buy thread. Trading MUST continue while KSB trains.
+        _ran, gate = _ksb_call(KSB.unified_buy_gate,
+                               symbol, notional_requested, score,
+                               timeout=2.0)
+        if not _ran or not isinstance(gate, dict):
+            floor_post('BOT', 'info',
+                       f"{symbol}: KSB gate busy (training?) — fail-open")
+            return {"approved": True, "notional": notional_requested,
+                    "reason": "KSB busy (training) — fail-open",
+                    "votes": [], "multiplier": 1.0}
         # Auto-shadow while brains haven't seen enough live trades.
         try:
             n_lessons = len(KSB.FLOOR_MEMORY.get_recent('lessons', 500))
@@ -13787,7 +13798,21 @@ def buy_stocks(symbols_to_buy_list, lock):
     print("Starting buy_stocks function...")
 
     # ═══ KSB: push fresh state into brain-suite bus ═══
-    if _KSB_AVAILABLE:
+    # Skip the whole KSB feed if the brain suite is busy (training or
+    # otherwise wedged). We must keep trading during market hours even
+    # when brains are unavailable; the buy_gate call below has its own
+    # fail-open path when KSB can't respond in time.
+    if _KSB_AVAILABLE and _KSB_INFLIGHT.acquire(blocking=False):
+        _KSB_INFLIGHT.release()
+    elif _KSB_AVAILABLE:
+        print("[KSB feed] brain suite busy (likely training) — "
+              "skipping feed this cycle; trades will fail-open the gate")
+        _KSB_AVAILABLE_THIS_CYCLE = False
+    else:
+        _KSB_AVAILABLE_THIS_CYCLE = False
+    _KSB_AVAILABLE_THIS_CYCLE = locals().get('_KSB_AVAILABLE_THIS_CYCLE',
+                                             _KSB_AVAILABLE)
+    if _KSB_AVAILABLE_THIS_CYCLE:
         try:
             _ksb_prices = {}
             _ksb_indic = {}
