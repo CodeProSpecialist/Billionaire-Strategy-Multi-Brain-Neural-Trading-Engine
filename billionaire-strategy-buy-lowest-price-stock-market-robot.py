@@ -13798,20 +13798,14 @@ def buy_stocks(symbols_to_buy_list, lock):
     print("Starting buy_stocks function...")
 
     # ═══ KSB: push fresh state into brain-suite bus ═══
-    # Skip the whole KSB feed if the brain suite is busy (training or
-    # otherwise wedged). We must keep trading during market hours even
-    # when brains are unavailable; the buy_gate call below has its own
-    # fail-open path when KSB can't respond in time.
-    if _KSB_AVAILABLE and _KSB_INFLIGHT.acquire(blocking=False):
-        _KSB_INFLIGHT.release()
-    elif _KSB_AVAILABLE:
+    # Skip the whole KSB feed if the brain-suite worker is currently
+    # busy (training or otherwise wedged). We must keep trading during
+    # market hours even when brains are unavailable; the buy_gate call
+    # below has its own fail-open path when KSB can't respond in time.
+    _KSB_AVAILABLE_THIS_CYCLE = _KSB_AVAILABLE and not _KSB_WORKER_BUSY.is_set()
+    if _KSB_AVAILABLE and not _KSB_AVAILABLE_THIS_CYCLE:
         print("[KSB feed] brain suite busy (likely training) — "
               "skipping feed this cycle; trades will fail-open the gate")
-        _KSB_AVAILABLE_THIS_CYCLE = False
-    else:
-        _KSB_AVAILABLE_THIS_CYCLE = False
-    _KSB_AVAILABLE_THIS_CYCLE = locals().get('_KSB_AVAILABLE_THIS_CYCLE',
-                                             _KSB_AVAILABLE)
     if _KSB_AVAILABLE_THIS_CYCLE:
         try:
             _ksb_prices = {}
@@ -13918,14 +13912,17 @@ def buy_stocks(symbols_to_buy_list, lock):
                 if _vix_df is not None and len(_vix_df) > 0:
                     _vix = float(_vix_df["Close"].values.flatten()[-1])
             except Exception: pass
-            VOLATILITY_REGIME.classify(spy_atr_pct=_spy_atr_pct,
-                                        spy_ret_5d=_spy_ret_5d, vix=_vix)
-            # Also push the same hint into KSB's bus so the regime brain's
-            # warmup fallback can use it when its own model is cold.
+            # Both VOLATILITY_REGIME.classify and KSB.push_regime_hint
+            # touch the KSB internal lock — if training holds it these
+            # would block for the retrain duration. Route through
+            # _ksb_call so we skip cleanly when KSB is busy.
+            _ksb_call(VOLATILITY_REGIME.classify,
+                      spy_atr_pct=_spy_atr_pct,
+                      spy_ret_5d=_spy_ret_5d, vix=_vix, timeout=2.0)
             if _KSB_AVAILABLE:
-                try: KSB.push_regime_hint(spy_ret_5d=_spy_ret_5d,
-                                           vix=_vix, spy_atr_pct=_spy_atr_pct)
-                except Exception: pass
+                _ksb_call(KSB.push_regime_hint,
+                          spy_ret_5d=_spy_ret_5d, vix=_vix,
+                          spy_atr_pct=_spy_atr_pct, timeout=2.0)
     except Exception as _e:
         _brain_log("BUY_HOOK", f"regime refresh failed: {_e}")
 
@@ -16682,38 +16679,41 @@ DASHBOARD_BROADCAST_INTERVAL_SECS = 3.0
 # memory, bounded latency.
 # ────────────────────────────────────────────────────────────────────────
 import concurrent.futures as _futures
-# Single-worker executor. All KSB calls funnel through this one thread, so
-# even if the underlying KSB routine wedges forever we only ever leak that
-# ONE worker — never a growing pile. Callers wait with a per-call timeout
-# and fall back to cache/skip on miss.
+# Single-worker executor + a "worker busy" flag that stays set until the
+# task actually finishes. If the worker is wedged, subsequent callers
+# skip immediately — nothing queues behind the stuck task, so neither
+# threads nor futures accumulate.
 _KSB_EXECUTOR = _futures.ThreadPoolExecutor(max_workers=1,
                                             thread_name_prefix='ksb-worker')
-_KSB_INFLIGHT = threading.Lock()
+_KSB_WORKER_BUSY = threading.Event()
 
 def _ksb_call(fn, *args, timeout=3.0, **kwargs):
     """Serialized call into KSB with a timeout.
-    Returns (ran: bool, result). ran=False → skipped because either the
-    single worker is already busy, or this submission timed out. Never
-    spawns more than one background thread total for the whole bot."""
-    if not _KSB_INFLIGHT.acquire(blocking=False):
+    Returns (ran: bool, result). ran=False → skipped because the worker
+    is currently busy (possibly wedged on a slow KSB call, or training)
+    or because this submission timed out. Only one task ever queued at
+    a time; never spawns more than one background thread total."""
+    if _KSB_WORKER_BUSY.is_set():
+        return False, None
+    _KSB_WORKER_BUSY.set()
+    def _wrapped():
+        try: return fn(*args, **kwargs)
+        finally: _KSB_WORKER_BUSY.clear()
+    try:
+        fut = _KSB_EXECUTOR.submit(_wrapped)
+    except Exception:
+        _KSB_WORKER_BUSY.clear()
         return False, None
     try:
-        fut = _KSB_EXECUTOR.submit(fn, *args, **kwargs)
-        try:
-            return True, fut.result(timeout=timeout)
-        except _futures.TimeoutError:
-            # Worker is still running; leave it — do NOT cancel (fut.cancel
-            # can't kill a running Python thread). Next caller will find
-            # _KSB_INFLIGHT still held (we release below) but the executor
-            # busy, and submit() will queue behind it. To keep queue
-            # bounded, we release the inflight flag anyway; the worker
-            # thread stays wedged on this one call and future submits will
-            # queue but not spawn new threads.
-            return False, None
-        except Exception:
-            return False, None
-    finally:
-        _KSB_INFLIGHT.release()
+        return True, fut.result(timeout=timeout)
+    except _futures.TimeoutError:
+        # Worker is still running the wedged task; it'll clear the busy
+        # flag itself when (if) fn ever returns. We don't cancel — Python
+        # can't kill a running thread. Next caller sees BUSY still set
+        # and skips cleanly; no pile-up.
+        return False, None
+    except Exception:
+        return False, None
 DASHBOARD_THINKING_LOG_MAX = 200     # ring-buffer size
 
 # Global command flags the trading loops honor. These are set by dashboard
