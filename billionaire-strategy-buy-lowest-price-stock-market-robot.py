@@ -17370,11 +17370,18 @@ class DashboardWSEngine:
                 except Exception as _e: _snap_result[0] = {'error': str(_e)}
             _snap_t = threading.Thread(target=_do_snap, daemon=True,
                                        name='ws-brain-snap')
-            _snap_t.start(); _snap_t.join(timeout=2.0)
+            # Cache the last good snapshot on the engine so a transient
+            # KSB lock stall shows stale-but-populated data instead of
+            # an OFFLINE tile flicker.
+            _snap_t.start(); _snap_t.join(timeout=8.0)
             if _snap_t.is_alive():
-                state['brain_suite'] = {'error': 'snapshot timeout (>2s)'}
+                cached = getattr(self, '_last_brain_snap', None)
+                state['brain_suite'] = cached if cached else {'error': 'snapshot timeout (>8s)'}
             else:
-                state['brain_suite'] = _snap_result[0] or {'error': 'no data'}
+                snap = _snap_result[0]
+                if isinstance(snap, dict) and 'error' not in snap:
+                    self._last_brain_snap = snap
+                state['brain_suite'] = snap or getattr(self, '_last_brain_snap', {'error': 'no data'})
             # P3.15: enrich with live scheduler timestamps so the HTML can
             # show "last retrain: 12m ago" / "next tick: in 23h 41m" instead
             # of misleading static text.
@@ -17448,6 +17455,7 @@ class DashboardWSEngine:
 
         # Settings (dashboard-editable knobs)
         state['settings'] = {
+            'manager_strictness': getattr(MANAGER_BRAIN, 'strictness', 'medium'),
             'chandelier_mode': CHANDELIER_MODE,
             'chandelier_atr_mult': CHANDELIER_ATR_MULT,
             'chandelier_min_hold_secs': CHANDELIER_MIN_HOLD_SECS,
