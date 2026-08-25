@@ -11,7 +11,7 @@
   --border: #2a3040;
   --green: #10b981; --red: #ef4444; --amber: #f59e0b; --blue: #58a6ff;
   --purple: #a78bfa;
-  --accent: #38bdf8;
+  --accent: #38bdf8; --cyan: #22d3ee;
   --mono: 'SF Mono', 'Menlo', Consolas, monospace;
 }
 * { box-sizing: border-box; }
@@ -579,6 +579,49 @@ td.right, th.right { text-align: right; }
           <input class="inp" id="sBtSamples" type="number" step="5" min="1"
             onchange="markDirty('backtest_min_samples', parseInt(this.value))">
         </div>
+        <div class="section-div"><h3>Brain B (Safety Gate)</h3></div>
+        <div class="inp-row">
+          <label>Mode</label>
+          <select class="inp-sel" id="sBbMode" onchange="markDirty('brain_b_mode', this.value)">
+            <option value="armed">armed</option>
+            <option value="shadow">shadow</option>
+          </select>
+        </div>
+        <div class="inp-row">
+          <label>Min Safe Prob</label>
+          <input class="inp" id="sBbMin" type="number" step="0.05" min="0" max="1"
+            onchange="markDirty('brain_b_min_safe', parseFloat(this.value))">
+        </div>
+
+        <div class="section-div"><h3>Brain D (Regime Filter)</h3></div>
+        <div class="inp-row">
+          <label>Mode</label>
+          <select class="inp-sel" id="sBdMode" onchange="markDirty('brain_d_mode', this.value)">
+            <option value="armed">armed</option>
+            <option value="shadow">shadow</option>
+          </select>
+        </div>
+
+        <div class="section-div"><h3>Brain F (Score Bump)</h3></div>
+        <div class="inp-row">
+          <label>Mode</label>
+          <select class="inp-sel" id="sBfMode" onchange="markDirty('brain_f_mode', this.value)">
+            <option value="armed">armed</option>
+            <option value="shadow">shadow</option>
+            <option value="off">off</option>
+          </select>
+        </div>
+        <div class="inp-row">
+          <label>Min Prob to Bump</label>
+          <input class="inp" id="sBfMinProb" type="number" step="0.05" min="0" max="1"
+            onchange="markDirty('brain_f_min_prob_to_bump', parseFloat(this.value))">
+        </div>
+        <div class="inp-row">
+          <label>Max Score Bump</label>
+          <input class="inp" id="sBfMaxBump" type="number" step="0.5" min="0"
+            onchange="markDirty('brain_f_max_score_bump', parseFloat(this.value))">
+        </div>
+
         <div class="section-div"><h3>🧠 KSB Brain Suite</h3></div>
         <div class="inp-row">
           <label>Gate Mode</label>
@@ -805,7 +848,6 @@ function render(s) {
   renderAccount(s.account);
   renderRegime(s.regime);
   renderGovernor(s.governor);
-  renderBrains(s.backtest_brain, s.chandelier, s.brain_trust);
   renderPositions(s.positions);
   renderProfitMonitor(s.profit_monitor);
   renderTrades(s.recent_trades);
@@ -869,16 +911,6 @@ function renderGovernor(g) {
   tag.textContent = g.can_trade ? 'OK' : 'BLOCKED';
   tag.className = 'tag ' + (g.can_trade ? 'tag-green' : 'tag-red');
 }
-
-function renderBrains(b, c, t) {
-  // P0 fix: DOM targets ('b-mode', 'b-thresh', 'c-mode', 'c-mult',
-  // '#brain-trust-tbl tbody') were removed when Brain B/C/F tiles retired.
-  // Retained as a no-op so any lingering caller doesn't error. All that
-  // data is now surfaced via renderKsbHealth() and renderBrainSuite().
-  return;
-}
-
-
 
 
 function renderPositions(p) {
