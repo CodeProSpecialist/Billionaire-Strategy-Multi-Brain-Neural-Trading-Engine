@@ -9128,7 +9128,18 @@ _SETTINGS_LOCK = threading.Lock()
 # Whitelist of persistable settings (matches keys accepted by _apply_setting).
 # Value = tuple(global_name, caster). Kept beside the KSB globals so they're
 # in the same "config" mental space.
+def _set_manager_strictness(v):
+    """Caster for manager_strictness — routes through the brain's setter
+    so persisted values apply the same live-effect as a dashboard change."""
+    v = str(v)
+    try:
+        MANAGER_BRAIN.set_strictness(v)
+    except Exception:
+        pass
+    return v
+
 _SETTINGS_WHITELIST = {
+    'manager_strictness':       ('MANAGER_STRICTNESS', _set_manager_strictness),
     'chandelier_mode':          ('CHANDELIER_MODE', str),
     'chandelier_atr_mult':      ('CHANDELIER_ATR_MULT', float),
     'chandelier_min_hold_secs': ('CHANDELIER_MIN_HOLD_SECS', int),
@@ -16846,10 +16857,6 @@ class DashboardWSEngine:
             floor_post('USER', 'instruction', "all 72h auto-blacklist entries cleared")
 
         # ---- Brain Trading Floor commands ----
-        elif cmd == 'trading_floor_msg':
-            text = (msg.get('text') or '').strip()
-            if text:
-                self._handle_floor_command(text)
         elif cmd == 'floor_clear':
             floor_clear()
             floor_post('USER', 'instruction', 'floor cleared')
