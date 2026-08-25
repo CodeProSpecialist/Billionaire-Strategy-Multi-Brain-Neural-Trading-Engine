@@ -13855,19 +13855,13 @@ def buy_stocks(symbols_to_buy_list, lock):
             # below via VOLATILITY_REGIME.classify(...) which writes into
             # the same KSB regime state. Do NOT reference _spy_ret_5d here —
             # it isn't computed until the next block runs.
-            # Cycle observation — wrapped in a soft-timeout thread. py-spy
-            # showed observe_market() taking the same KSB snapshot lock that
-            # CapitalAllocation, dashboard, and buy_stocks all fight over;
-            # a slow snapshot inside KSB wedged the buy thread for 180s+.
-            # If observe_market can't return in 5s we skip it this cycle.
-            def _obs_call():
-                try: KSB.TRADING_FLOOR.observe_market()
-                except Exception: pass
-            _obs_t = _brain_threading.Thread(target=_obs_call, daemon=True,
-                                             name='ksb-observe-market')
-            _obs_t.start(); _obs_t.join(timeout=5.0)
-            if _obs_t.is_alive():
-                print("[KSB feed] observe_market > 5s — skipping this cycle")
+            # Cycle observation — routed through _ksb_call so we can never
+            # spawn a thread that will leak. If another KSB call is in
+            # flight we simply skip observe_market this cycle. Prevents
+            # the runaway daemon-thread pile-up py-spy revealed.
+            _ran, _ = _ksb_call(KSB.TRADING_FLOOR.observe_market)
+            if not _ran:
+                print("[KSB feed] observe_market skipped (KSB busy)")
         except Exception as _e:
             # P1.6: log the traceback so silent breakage is diagnosable.
             # Rate-limited via a module-level flag: print traceback the FIRST
@@ -16645,7 +16639,56 @@ DASHBOARD_WS_ENABLED = True
 # BOT_DASHBOARD_TOKEN=<secret> whenever binding beyond loopback.
 DASHBOARD_WS_HOST = os.environ.get('BOT_DASHBOARD_HOST', '0.0.0.0').strip() or '0.0.0.0'
 DASHBOARD_WS_PORT = int(os.environ.get('BOT_DASHBOARD_PORT', '8765'))
-DASHBOARD_BROADCAST_INTERVAL_SECS = 1.0
+DASHBOARD_BROADCAST_INTERVAL_SECS = 3.0
+
+# ────────────────────────────────────────────────────────────────────────
+# KSB call serializer.
+# py-spy dumps showed 200+ leaked daemon threads all wedged inside
+# KSB.snapshot() at line 589 — the KSB module has an internal lock (or
+# very slow path) that never releases when contended. Both the WS
+# broadcast loop and the buy_stocks path used to spawn a fresh timeout
+# thread on every tick, so failed calls accumulated forever and each held
+# references to KSB structures.
+#
+# Fix: single global mutex around every KSB entry we make from this bot.
+# If the lock is already held, callers get None (WS falls back to cache;
+# buy_stocks skips observe_market this cycle) instead of spawning yet
+# another thread that will also block. Bounded thread count, bounded
+# memory, bounded latency.
+# ────────────────────────────────────────────────────────────────────────
+import concurrent.futures as _futures
+# Single-worker executor. All KSB calls funnel through this one thread, so
+# even if the underlying KSB routine wedges forever we only ever leak that
+# ONE worker — never a growing pile. Callers wait with a per-call timeout
+# and fall back to cache/skip on miss.
+_KSB_EXECUTOR = _futures.ThreadPoolExecutor(max_workers=1,
+                                            thread_name_prefix='ksb-worker')
+_KSB_INFLIGHT = threading.Lock()
+
+def _ksb_call(fn, *args, timeout=3.0, **kwargs):
+    """Serialized call into KSB with a timeout.
+    Returns (ran: bool, result). ran=False → skipped because either the
+    single worker is already busy, or this submission timed out. Never
+    spawns more than one background thread total for the whole bot."""
+    if not _KSB_INFLIGHT.acquire(blocking=False):
+        return False, None
+    try:
+        fut = _KSB_EXECUTOR.submit(fn, *args, **kwargs)
+        try:
+            return True, fut.result(timeout=timeout)
+        except _futures.TimeoutError:
+            # Worker is still running; leave it — do NOT cancel (fut.cancel
+            # can't kill a running Python thread). Next caller will find
+            # _KSB_INFLIGHT still held (we release below) but the executor
+            # busy, and submit() will queue behind it. To keep queue
+            # bounded, we release the inflight flag anyway; the worker
+            # thread stays wedged on this one call and future submits will
+            # queue but not spawn new threads.
+            return False, None
+        except Exception:
+            return False, None
+    finally:
+        _KSB_INFLIGHT.release()
 DASHBOARD_THINKING_LOG_MAX = 200     # ring-buffer size
 
 # Global command flags the trading loops honor. These are set by dashboard
@@ -17360,28 +17403,19 @@ class DashboardWSEngine:
         except Exception as e:
             state['intel'] = {'error': str(e)}
 
-        # Kalshi-style brain suite — snapshot inside a soft-timeout thread
-        # to keep the WS broadcast from wedging when the KSB internal lock
-        # is held by observe_market / CapitalAllocationEngine (see py-spy).
+        # Kalshi-style brain suite — routed through _ksb_call (single
+        # global mutex, no thread spawn). If a KSB call is already in
+        # flight elsewhere, serve the cached snapshot instead of
+        # spawning a fresh daemon thread that would also block and leak.
         try:
-            _snap_result = [None]
-            def _do_snap():
-                try: _snap_result[0] = brain_suite_snapshot()
-                except Exception as _e: _snap_result[0] = {'error': str(_e)}
-            _snap_t = threading.Thread(target=_do_snap, daemon=True,
-                                       name='ws-brain-snap')
-            # Cache the last good snapshot on the engine so a transient
-            # KSB lock stall shows stale-but-populated data instead of
-            # an OFFLINE tile flicker.
-            _snap_t.start(); _snap_t.join(timeout=8.0)
-            if _snap_t.is_alive():
-                cached = getattr(self, '_last_brain_snap', None)
-                state['brain_suite'] = cached if cached else {'error': 'snapshot timeout (>8s)'}
+            ran, snap = _ksb_call(brain_suite_snapshot)
+            if ran and isinstance(snap, dict) and 'error' not in snap:
+                self._last_brain_snap = snap
+                state['brain_suite'] = snap
             else:
-                snap = _snap_result[0]
-                if isinstance(snap, dict) and 'error' not in snap:
-                    self._last_brain_snap = snap
-                state['brain_suite'] = snap or getattr(self, '_last_brain_snap', {'error': 'no data'})
+                cached = getattr(self, '_last_brain_snap', None)
+                state['brain_suite'] = cached if cached else {
+                    'error': 'KSB busy — no cached snapshot yet'}
             # P3.15: enrich with live scheduler timestamps so the HTML can
             # show "last retrain: 12m ago" / "next tick: in 23h 41m" instead
             # of misleading static text.
