@@ -17,7 +17,37 @@ export APCA_API_BASE_URL=https://paper-api.alpaca.markets   # or live
 python billionaire-strategy-buy-lowest-price-stock-market-robot.py
 ```
 
-Then open `alpaca_dashboard.html` in a browser. It connects to the bot over WebSocket on `127.0.0.1:8765` at 1 Hz.
+Then open `alpaca_dashboard.html` in a browser. It connects to the bot over WebSocket on `<hostname>:8765` at 1 Hz.
+
+---
+
+## Recent upgrade highlights (Aug 2026)
+
+The dashboard ↔ bot bridge and buy-cycle stability got a substantial overhaul:
+
+### Dashboard / WebSocket
+- **WebSocket transport rewritten from scratch** on both sides (bot's `DashboardWSEngine` + browser `WS` module). Per-client 3s send timeout so a slow browser can never stall the broadcast; 8s connect-timeout on the client so the UI never sits in "connecting…" forever.
+- **Web-server hosting**: bot binds `0.0.0.0:8765` by default (override with `BOT_DASHBOARD_HOST` / `BOT_DASHBOARD_PORT`). The dashboard connects direct to `ws://<hostname>:8765` by default — works from `file://`, any static HTTP server, or Caddy.
+  - `?proxy=1` — same-origin `/ws` (Caddy reverse-proxy)
+  - `?ws=ws://host:port` — explicit URL override
+  - `?token=...` — auth when `BOT_DASHBOARD_TOKEN` is set on the bot
+- **Live connection banner** shows the exact WS URL and close code so misconfigured proxies are diagnosable at a glance.
+- **Brain B / D / F settings UI** wired up in the Settings card so the whitelist keys the bot already persists actually have controls.
+- **Dead `renderBrains()`** removed; `--cyan` palette token added.
+
+### Bot stability
+- **`buy_stocks` hang fix** (root-cause found via `py-spy dump`): three threads were contending on the same KSB internal lock — `observe_market()` in the buy path, `brain_suite_snapshot()` in the WS `_build_state`, and CapitalAllocation's `decide_multiplier`. Both external entry points now run in soft-timeout threads (5s for `observe_market`, 2s for `brain_suite_snapshot`) so a slow KSB tick can no longer wedge the buy cycle.
+- **Pretrain crash under KSB fixed**: `pretrain_all_brains()` short-circuits when KSB owns the brains; error-log path is `getattr`-safe. No more `'RiskSentinel' object has no attribute 'name'`.
+- **Network-timeout guards** on the KSB feed loop (45s wall-clock deadline, capped at 25 symbols) and on the SPY/VIX `yf.download` calls (`timeout=15` / `timeout=10`).
+- **Settings persistence**: `manager_strictness` now round-trips through `~/.alpaca_bot_settings.json` and re-applies at startup via `MANAGER_BRAIN.set_strictness()`.
+
+### Environment overrides
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `BOT_DASHBOARD_HOST` | `0.0.0.0` | WS bind address (`127.0.0.1` for loopback-only) |
+| `BOT_DASHBOARD_PORT` | `8765` | WS bind port |
+| `BOT_DASHBOARD_TOKEN` | *(unset)* | If set, clients must present `?token=<value>` |
 
 On first launch the bot will:
 1. Bootstrap-install any missing dependencies via `pip list` + `pip install` (stdlib-only, no `--break-system-packages`).
