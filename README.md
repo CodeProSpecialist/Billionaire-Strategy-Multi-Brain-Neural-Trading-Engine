@@ -1,5 +1,7 @@
 # Billionaire Strategy Stock Market Trading Robot
 
+***** New Upgraded Version on 8-26-2026 *****
+
 Single-file automated Alpaca daytrading bot for NASDAQ + S&P 500 equities, driven by an ensemble of neural-net "brains" and a rules-based dip-buy / bull-momentum strategy. Ships with a live browser dashboard.
 
 **Files**
