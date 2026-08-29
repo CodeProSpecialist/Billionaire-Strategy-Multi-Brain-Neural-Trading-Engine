@@ -20,7 +20,7 @@ python billionaire_strategy_buy_lowest_price_stock_market_robot.py
 ```
 
 Then open `alpaca_dashboard.html` in a browser. It connects to the bot over WebSocket on `<hostname>:8080` after 
-you setup a seperate webserver of your choice on port 8080. 
+you setup a seperate webserver of your choice on recommended port 8080. 
 
 ---
 
