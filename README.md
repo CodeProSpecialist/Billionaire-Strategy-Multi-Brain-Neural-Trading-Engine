@@ -6,7 +6,8 @@ Single-file automated Alpaca daytrading bot for NASDAQ + S&P 500 equities, drive
 
 **Files**
 - `billionaire_strategy_buy_lowest_price_stock_market_robot.py` — the bot (~12.5k lines, one file, banner "Version 17")
-- `alpaca_dashboard.html` — the dashboard websocket connection serves at `ws://127.0.0.1:8765`
+- `alpaca_dashboard.html` — Open the html file in a web browser after the robot is running. 
+The dashboard websocket connection is also at `ws://127.0.0.1:8765`
 
 ---
 
