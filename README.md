@@ -54,7 +54,7 @@ The dashboard ↔ bot bridge and buy-cycle stability got a substantial overhaul:
 
 ### Dashboard / WebSocket
 - **WebSocket transport rewritten from scratch** on both sides (bot's `DashboardWSEngine` + browser `WS` module). Per-client 3s send timeout so a slow browser can never stall the broadcast; 8s connect-timeout on the client so the UI never sits in "connecting…" forever.
-- **Web-server hosting**: bot binds `0.0.0.0:8765` by default (override with `BOT_DASHBOARD_HOST` / `BOT_DASHBOARD_PORT`). The dashboard connects direct to `ws://<hostname>:8765` by default — works from `file://`, any static HTTP server, or Caddy.
+- **Web-server hosting**: bot binds `0.0.0.0:8080` by default (override with `BOT_DASHBOARD_HOST` / `BOT_DASHBOARD_PORT`). The dashboard connects direct to `ws://<hostname>:8765` by default — works from `file://`, any static HTTP server, or Caddy.
   - `?proxy=1` — same-origin `/ws` (Caddy reverse-proxy)
   - `?ws=ws://host:port` — explicit URL override
   - `?token=...` — auth when `BOT_DASHBOARD_TOKEN` is set on the bot
