@@ -19,7 +19,7 @@ export APCA_API_BASE_URL=https://paper-api.alpaca.markets   # or live
 python billionaire_strategy_buy_lowest_price_stock_market_robot.py
 ```
 
-Then open `alpaca_dashboard.html` in a browser. It connects to the bot over WebSocket on `<hostname>:8765` at 1 Hz.
+Then open `alpaca_dashboard.html` in a browser. It connects to the bot over WebSocket on `<hostname>:8080` at 1 Hz.
 
 ---
 
