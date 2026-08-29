@@ -19,7 +19,8 @@ export APCA_API_BASE_URL=https://paper-api.alpaca.markets   # or live
 python billionaire_strategy_buy_lowest_price_stock_market_robot.py
 ```
 
-Then open `alpaca_dashboard.html` in a browser. It connects to the bot over WebSocket on `<hostname>:8080` at 1 Hz.
+Then open `alpaca_dashboard.html` in a browser. It connects to the bot over WebSocket on `<hostname>:8080` after 
+you setup a seperate webserver of your choice on port 8080. 
 
 ---
 
@@ -54,7 +55,10 @@ The dashboard ↔ bot bridge and buy-cycle stability got a substantial overhaul:
 
 ### Dashboard / WebSocket
 - **WebSocket transport rewritten from scratch** on both sides (bot's `DashboardWSEngine` + browser `WS` module). Per-client 3s send timeout so a slow browser can never stall the broadcast; 8s connect-timeout on the client so the UI never sits in "connecting…" forever.
-- **Web-server hosting**: bot binds `0.0.0.0:8080` by default (override with `BOT_DASHBOARD_HOST` / `BOT_DASHBOARD_PORT`). The dashboard connects direct to `ws://<hostname>:8765` by default — works from `file://`, any static HTTP server, or Caddy.
+- **Web-server hosting**: bot binds `0.0.0.0:8080` by default (override with `BOT_DASHBOARD_HOST` / `BOT_DASHBOARD_PORT`) 
+It connects to the bot over WebSocket on `<hostname>:8080` after 
+you setup a seperate webserver of your choice on port 8080. 
+The dashboard connects direct to `ws://<hostname>:8765` by default — works from `file://`, any static HTTP server, or Caddy.
   - `?proxy=1` — same-origin `/ws` (Caddy reverse-proxy)
   - `?ws=ws://host:port` — explicit URL override
   - `?token=...` — auth when `BOT_DASHBOARD_TOKEN` is set on the bot
