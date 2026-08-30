@@ -141,7 +141,7 @@ Not particularly glamorous. But disciplined.
 
 ---
 
-## 🚫 The Robot Can Fire Stocks
+## 🚫 The Robot Can Ignore Losing Stocks
 
 Version 17 tracks performance at the **individual-symbol level**. If a stock develops a sufficiently poor combination of closed-trade history, negative net P/L, and low win rate, the robot **temporarily mutes it** for 24 hours rather than repeatedly throwing new trades at the same problem.
 
