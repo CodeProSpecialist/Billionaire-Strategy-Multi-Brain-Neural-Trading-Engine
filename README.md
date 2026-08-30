@@ -252,7 +252,7 @@ Much better than: *"MODEL FILE EXISTS = AI IS READY."*
 
 ## 🏆 What Makes Version 17 Interesting?
 
-It's not that the robot has *RSI + MACD + ML + AI + VIX + ATR*. Lots of projects accumulate indicators until the code looks like a Christmas tree.
+It's not that the robot has *RSI + MACD + ML + AI + VIX + ATR*. Lots of projects accumulate indicators until the code looks like a giant, colorful, decorated basket of flowers.
 
 What's interesting is the **layering**:
 
