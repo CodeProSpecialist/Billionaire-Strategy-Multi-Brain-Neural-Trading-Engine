@@ -45,9 +45,6 @@ you setup a seperate webserver of your choice on recommended port 8080.
 - `get_monitored_symbols_snapshot(max_symbols=25)` batches the whole watchlist behind a 60-second cache so the dashboard can broadcast live TA cheaply.
 - Dashboard adds two full-row cards, **🧠 Daytrade Brain — Symbol Scans** and **👁 Monitored Symbols**, wired through `renderDaytradeScans()` / `renderMonitoredSymbols()`.
 
-### Naming
-- The bot's Python file is now snake_case: **`billionaire_strategy_buy_lowest_price_stock_market_robot.py`**.
-
 ---
 
 ## Earlier upgrade highlights (Aug 2026)
@@ -65,7 +62,6 @@ The dashboard connects direct to `ws://<hostname>:8765` by default — works fro
   - `?token=...` — auth when `BOT_DASHBOARD_TOKEN` is set on the bot
 - **Live connection banner** shows the exact WS URL and close code so misconfigured proxies are diagnosable at a glance.
 - **Brain B / D / F settings UI** wired up in the Settings card so the whitelist keys the bot already persists actually have controls.
-- **Dead `renderBrains()`** removed; `--cyan` palette token added.
 
 ### Bot stability
 - **KSB brain-suite serializer** (fixes catastrophic thread leak — py-spy showed 200+ daemon threads all wedged on `KSB.snapshot()`): every KSB entry from this bot now funnels through a single-worker `ThreadPoolExecutor` gated by an inflight mutex. If a KSB call is already running (training, retrain, slow snapshot) callers get `(False, None)` immediately and fall back to cache / skip. Worst-case ever-leaked thread count is 1, not hundreds.
@@ -223,7 +219,7 @@ schedule  websockets  requests  tensorflow (or tensorflow-cpu)
 
 ## Third-Party Libraries and Attributions
 
-The following third-party program libraries are used by this software. Each library is the property of its respective copyright holders and authors, and is used here under the terms of its own upstream license. Their inclusion does not imply endorsement of this software by the library authors. This attribution list is provided to satisfy the Lennox GNU program license requirement that program library names be referenced together with their respective copyright holders and authors.
+The following third-party program libraries are used by this software. Each library is the property of its respective copyright holders and authors, and is used here under the terms of its own upstream license. Their inclusion does not imply endorsement of this software by the library authors. This attribution list is provided to satisfy the Linux GNU program license requirement that program library names be referenced together with their respective copyright holders and authors.
 
 Only the third-party libraries actually imported by `billionaire_strategy_buy_lowest_price_stock_market_robot.py` are listed. Python standard-library modules (`os`, `sys`, `time`, `json`, `csv`, `logging`, `threading`, `datetime`, `math`, `pickle`, `sqlite3`, `random`, `concurrent.futures`, `collections`, `importlib.metadata`, `subprocess`, `shutil`, etc.) are part of the Python distribution and are not repeated here.
 
