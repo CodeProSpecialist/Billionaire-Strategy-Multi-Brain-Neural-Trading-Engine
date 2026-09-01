@@ -1,5 +1,7 @@
 # 🤖 Billionaire Strategy Multi-Brain Neural Trading Engine
 
+Machine learning where it matters most: making the BUY decision. 
+
 Machine Learning Powered Market Intelligence for Smarter BUY Decisions
 Millionaire Stock Trading Robot Expert is an advanced Python-based automated trading system designed to put maximum intelligent analysis into every BUY decision.
 The future selling price of a stock is impossible to know in advance. Instead of pretending otherwise, this robot focuses its machine learning where it can be most useful:
