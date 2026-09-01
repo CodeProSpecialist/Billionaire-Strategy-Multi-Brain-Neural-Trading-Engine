@@ -382,9 +382,11 @@ Imagine explaining this robot to a stock:
 > **Stock:** "RSI is strong!"
 > 
 > **Robot:** "We'll see."
+> 
 > **Stock:** "MACD crossed!"
 > 
 > **Robot:** "Volume?"
+> 
 > **Stock:** "...yes."
 > 
 > **Robot:** "Momentum?"
@@ -398,6 +400,7 @@ Imagine explaining this robot to a stock:
 > **Robot:** "Risk Brain?"
 > 
 > **Risk Brain:** "I'm uncomfortable."
+> 
 > **Chair:** "Denied."
 > 
 > **Stock:** "WHY?!"
