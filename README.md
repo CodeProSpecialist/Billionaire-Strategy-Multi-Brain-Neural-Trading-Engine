@@ -14,16 +14,26 @@ Its machine-learning brain evaluates multiple technical characteristics, includi
 
 
 📉 RSI / oversold conditions
+
+
 📈 MACD and signal relationships
+
 ⚡ Volatility through ATR
+
 📊 Trading volume
+
 📈 Short-term and medium-term trends
+
 🔄 Recent price returns
+
 📐 SMA20 and SMA50 relationships
+
 🧩 Combinations and patterns across multiple trading days
+
 The model uses a Conv1D + LSTM neural-network architecture to identify both short-term patterns and temporal relationships within the 20-day market sequence.
 
 🎯 Maximum Effort Into the BUY
+
 The robot does not attempt to predict an exact future sell price.
 Instead, its ML brain asks a more practical question:
 “Given what we know right now, how favorable is this BUY opportunity?”
@@ -33,17 +43,20 @@ The result is a hybrid approach:
 Trading Rules + Technical Analysis + Machine Learning + Risk Controls
 
 🔄 The Brain Learns From Historical Trades
+
 The ML system trains on historical market data and creates examples based on whether a trade would have ultimately been profitable under the robot's trading/exit logic.
 The system also performs chronological walk-forward evaluation to examine how well the learned patterns generalize through time.
 After sufficient live trading experience is accumulated, the system can also use the robot's own completed trade outcomes for ongoing maintenance training.
 
 🛡️ Built With Guardrails
+
 The ML brain isn't allowed to immediately take control of live trading.
 The robot requires a minimum number of completed live trades before allowing the ML system to influence live BUY scoring.
 Its ML influence is also deliberately limited, preventing a single neural-network prediction from completely overriding the underlying trading strategy.
 If the ML system is unavailable or cannot produce a valid prediction, the robot can fall back to its existing rule-based BUY scoring.
 
 🚀 The Philosophy
+
 Don't try to predict the unknowable.
 The market will determine the eventual selling price.
 The robot's job is to make the best possible BUY decision with the information available at the moment the decision is made.
