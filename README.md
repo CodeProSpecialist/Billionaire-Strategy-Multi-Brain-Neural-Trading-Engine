@@ -37,7 +37,7 @@ The robot does not attempt to predict an exact future sell price. Instead, its M
 
 > *"Given what we know right now, how favorable is this BUY opportunity?"*
 
-The machine-learning probability is incorporated into the robot's existing BUY scoring system. This allows the AI to enhance the trading strategy rather than blindly replace it.
+The machine-learning probability is incorporated into the robot's existing BUY scoring system. This allows the Machine Learning brain models to enhance the trading strategy rather than blindly replace it.
 
 The result is a hybrid approach:
 
@@ -376,21 +376,34 @@ That's a much more ambitious architecture than a simple buy/sell script.
 Imagine explaining this robot to a stock:
 
 > **Stock:** "I went up 2%!"
+> 
 > **Robot:** "Interesting."
+> 
 > **Stock:** "RSI is strong!"
+> 
 > **Robot:** "We'll see."
 > **Stock:** "MACD crossed!"
+> 
 > **Robot:** "Volume?"
 > **Stock:** "...yes."
+> 
 > **Robot:** "Momentum?"
+> 
 > **Stock:** "...yes."
+> 
 > **Robot:** "Market regime?"
+> 
 > **Stock:** "Bullish."
+> 
 > **Robot:** "Risk Brain?"
+> 
 > **Risk Brain:** "I'm uncomfortable."
 > **Chair:** "Denied."
+> 
 > **Stock:** "WHY?!"
+> 
 > **Robot:** "Because you had earnings coming."
+> 
 > **Stock:** "...oh."
 
 That's Version 17.
