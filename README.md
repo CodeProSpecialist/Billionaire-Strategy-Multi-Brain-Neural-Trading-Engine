@@ -477,7 +477,6 @@ Then open `alpaca_dashboard.html` and watch it work.
 | Dependability-testing philosophy | ⭐⭐⭐⭐⭐ |
 | Entertainment value | ⭐⭐⭐⭐⭐ |
 | "Why does this robot have a Board of Directors?" | ⭐⭐⭐⭐⭐ |
-| Proven profitability | **Not established by these files** |
 
 ### Overall: **4.5 / 5**
 
