@@ -9,6 +9,7 @@ Find the strongest buying opportunities using everything the market is telling u
 
 
 🧠 A Machine-Learning Trading Brain
+
 The robot uses a TensorFlow/Keras neural network to analyze a rolling 20-day sequence of market conditions and estimate the probability that a potential trade will be profitable.
 Its machine-learning brain evaluates multiple technical characteristics, including:
 
