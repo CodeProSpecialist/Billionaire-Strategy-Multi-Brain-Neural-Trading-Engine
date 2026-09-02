@@ -420,6 +420,11 @@ It doesn't desperately need to trade.
 ## ⚡ Quick Start — Trading in Under a Minute
 
 ```bash
+
+step 1: download and install the 
+Anaconda environment for python3 
+and select YES to auto load the base environment. 
+
 export APCA_API_KEY_ID='your_key'
 export APCA_API_SECRET_KEY='your_secret_key'
 export APCA_API_BASE_URL='https://paper-api.alpaca.markets'  # paper trading ( not using real money ) 
