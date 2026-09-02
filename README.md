@@ -420,9 +420,13 @@ It doesn't desperately need to trade.
 ## ⚡ Quick Start — Trading in Under a Minute
 
 ```bash
-export APCA_API_KEY_ID=your_key
-export APCA_API_SECRET_KEY=your_secret
-export APCA_API_BASE_URL=https://paper-api.alpaca.markets   # or live
+export APCA_API_KEY_ID='your_key'
+export APCA_API_SECRET_KEY='your_secret_key'
+export APCA_API_BASE_URL='https://paper-api.alpaca.markets'  # paper trading ( not using real money ) 
+# ( pick one URL for trading )
+# for live trading with real money uncomment the line below:
+# export APCA_API_BASE_URL='https://api.alpaca.markets'
+
 python billionaire_strategy_buy_lowest_price_stock_market_robot.py
 ```
 
