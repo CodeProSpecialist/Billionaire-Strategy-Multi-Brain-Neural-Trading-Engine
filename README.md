@@ -437,7 +437,7 @@ export APCA_API_BASE_URL='https://paper-api.alpaca.markets'  # paper trading ( n
 
 then reboot the computer to reload the .bashrc variables 
 
-python billionaire_strategy_buy_lowest_price_stock_market_robot.py
+python3 billionaire_strategy_buy_lowest_price_stock_market_robot.py
 ```
 
 On first launch the bot will:
