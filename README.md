@@ -29,6 +29,18 @@ Its machine-learning brain evaluates multiple technical characteristics, includi
 
 The model uses a **Conv1D + LSTM neural-network architecture** to identify both short-term patterns and temporal relationships within the 20-day market sequence.
 
+
+System Recommendations: 
+Ubuntu Linux 24.04
+
+16GB RAM 
+
+1 TB Hard Drive or larger. 
+
+1GHZ or faster CPU 
+
+Python 3.13.9
+
 ---
 
 ## 🎯 Maximum Effort Into the BUY
