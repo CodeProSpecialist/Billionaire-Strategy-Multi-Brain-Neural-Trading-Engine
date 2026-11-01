@@ -10956,8 +10956,10 @@ def get_intraday_vwap(symbol):
 #     on a CONFIRMED pivot: the histogram must reach meaningful depth/height
 #     and then reverse for CE_MACD_CONFIRM_BARS consecutive bars, at which
 #     point the bar CE_MACD_CONFIRM_BARS back is declared the extreme. Cost:
-#     ~2 minutes of slippage vs the theoretical perfect bar. Set
-#     CE_MACD_CONFIRM_BARS = 1 for a faster, noisier trigger.
+#     1 bar of slippage vs the theoretical perfect bar at the current
+#     CE_MACD_CONFIRM_BARS = 1 setting (the fastest honest trigger there is).
+#     Raise it to 2 for fewer false pivots on chop at the cost of one more
+#     bar of lag.
 #
 # Combine logic (both configurable below):
 #   BUY  = Chandelier flip-to-long AND confirmed histogram dip bottom
@@ -10984,7 +10986,14 @@ CE_MAX_BARS_SINCE     = 3         # flip must be this fresh to still act on
 CE_MACD_FAST          = 12
 CE_MACD_SLOW          = 26
 CE_MACD_SIGNAL        = 9
-CE_MACD_CONFIRM_BARS  = 2         # bars of reversal needed to confirm a pivot
+CE_MACD_CONFIRM_BARS  = 1         # bars of reversal needed to confirm a pivot
+                                  # 1 = fastest/noisiest: the pivot is called
+                                  # on the FIRST bar that reverses, so the
+                                  # signal lands 1 bar after the true extreme
+                                  # instead of 2. More false pivots on chop;
+                                  # that is the trade accepted on purpose.
+                                  # The Chandelier flip is unaffected -- it is
+                                  # exact either way.
 CE_MACD_LOOKBACK      = 90        # bars used for the depth/height scale
 CE_MACD_MIN_DEPTH_FRAC= 0.35      # pivot must reach 35% of the recent extreme
 CE_MACD_MAX_BARS_SINCE= 5         # pivot must still be fresh to act on
