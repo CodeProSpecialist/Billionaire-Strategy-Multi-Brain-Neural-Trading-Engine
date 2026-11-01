@@ -10264,6 +10264,135 @@ CLOSE_SWEEP_SELL_ALL = True
 # No new entries at/after this time (ET), so nothing is bought after the
 # 3:45pm flatten and then carried overnight.
 NO_NEW_BUYS_AFTER = (15, 30)
+
+# ============================================================================
+# V19 ADDITION -- MACD DIP GATE (1-minute entry and exit)
+# ============================================================================
+# Added 2026-11-01 after a full backtest session. READ THIS BEFORE ENABLING.
+#
+# WHAT IT IS
+#   Entry (1-minute bars): buy when the MACD histogram AND the MACD signal
+#     line are BOTH in the bottom 30% of their trailing 90-bar range (a true
+#     dip on both), the histogram is turning UP from a local low, the last
+#     1-minute price change is positive, and the strength of the histogram
+#     turn is at or above the median turn strength ("turn >= p50").
+#   Exit (1-minute bars): sell only when ALL THREE fire together --
+#     the histogram rolls over from a peak, the 1-minute price is falling,
+#     AND RSI(14) is no longer above 70.
+#
+# WHAT WAS MEASURED (22 symbols, 1-minute bars, Oct 5-30 2026, chronological
+# split: tuned on Oct 5-21, validated on Oct 22-30 which was never tuned on)
+#   Out-of-sample gross edge .... +0.0657% per trade, t = 2.96, n = 371
+#   Break-even round-trip cost .. 0.0657%
+#   Confirmed Alpaca fees ....... 0.010%  (commission is $0; CAT + REG only)
+#   Effective spread ............ NOT MEASURED. Corwin-Schultz estimates it
+#                                 at 0.035% on 1-minute bars and 0.090% on
+#                                 5-minute bars. The true figure decides
+#                                 whether this is profitable.
+#
+# HONEST STATUS
+#   The gross edge is real and replicated out-of-sample. Whether it is
+#   PROFITABLE depends entirely on the true effective spread, which cannot be
+#   measured from bar data or from account statements -- it requires order
+#   submission timestamps compared against the quoted mid at that moment.
+#   At a 0.035% spread this makes money. At 0.090% it loses. It is genuinely
+#   too close to call. It ships ENABLED at the operator's request; the
+#   operator is aware the profitability question is unresolved.
+#
+# WHAT WAS TESTED AND REJECTED (do not re-try these; see FINDINGS.md)
+#   - 5-minute or 15-minute entry with 1-minute exit: WORSE (+0.042% / -0.008%
+#     gross). Slowing the entry adds lag that costs more than the noise it removes.
+#   - Requiring the dip on BOTH 1m and 5m: worse in all 8 pairings.
+#   - Exiting on any single condition instead of all three: worse.
+#   - Stacking turn + price-change + distance filters: collapsed to +0.003%.
+#   - Volume confirmation and MACD-signal-height thresholds: no improvement.
+#
+# ENABLED BY DEFAULT at the operator's request. To disable, set this to False.
+# Before trusting it with size: paper-trade and compare realized fills against
+# the quoted mid at submission to establish your real effective spread. At a
+# 0.035% spread this earns roughly +0.031% per trade; at 0.090% it loses about
+# 0.024% per trade. That measurement has not been made.
+USE_MACD_DIP_GATE = True           # ships ON -- see honest status above
+MACD_DIP_RANGE_LOOKBACK = 90       # bars used for the range percentile
+MACD_DIP_MAX_PCTILE = 0.30         # hist AND signal must be <= this in range
+MACD_DIP_MIN_TURN = 0.0983         # median turn strength from the tuning set
+MACD_DIP_EXIT_RSI = 70.0           # RSI above this keeps the position open
+MACD_DIP_MAX_HOLD_MIN = 120        # hard cap; EOD flatten still applies
+
+
+def _macd_range_pctile(arr, idx, lookback=None):
+    """Where arr[idx] sits inside its own trailing range. 0.0 = bottom.
+    Returns None when the window is flat or too short to be meaningful."""
+    lookback = lookback or MACD_DIP_RANGE_LOOKBACK
+    try:
+        w = arr[max(0, idx - lookback + 1): idx + 1]
+        w = w[np.isfinite(w)]
+        if len(w) < 5 or not np.isfinite(arr[idx]):
+            return None
+        rng = float(w.max() - w.min())
+        if rng <= 0:
+            return None
+        return float((arr[idx] - w.min()) / rng)
+    except Exception:
+        return None
+
+
+def macd_dip_entry_ok(closes, idx=-1):
+    """V19 entry gate on 1-minute closes. Causal: reads no bar after idx."""
+    if not USE_MACD_DIP_GATE:
+        return False, "gate disabled"
+    try:
+        c = np.asarray(closes, dtype=float)
+        i = len(c) - 1 if idx == -1 else idx
+        if i < 40:
+            return False, "not enough bars"
+        macd_line, macd_sig, _ = talib.MACD(c, fastperiod=12, slowperiod=26, signalperiod=9)
+        hist = macd_line - macd_sig
+        ph = _macd_range_pctile(hist, i)
+        ps = _macd_range_pctile(macd_sig, i)
+        if ph is None or ps is None:
+            return False, "no range"
+        if ph > MACD_DIP_MAX_PCTILE or ps > MACD_DIP_MAX_PCTILE:
+            return False, f"not a dip (hist {ph:.2f}, sig {ps:.2f})"
+        if not (hist[i] > hist[i - 1] and hist[i - 1] <= hist[i - 2]):
+            return False, "histogram not turning up"
+        if not (c[i] > c[i - 1]):
+            return False, "1m price not rising"
+        turn = (hist[i] - hist[i - 1]) / (abs(hist[i - 1]) + 1e-9)
+        if turn < MACD_DIP_MIN_TURN:
+            return False, f"turn {turn:.3f} below p50"
+        return True, f"dip hist {ph:.2f} sig {ps:.2f} turn {turn:.3f}"
+    except Exception as e:
+        logging.warning(f"macd_dip_entry_ok failed: {e}")
+        return False, "error"
+
+
+def macd_dip_exit_now(closes, idx=-1):
+    """V19 exit gate: sell only when ALL THREE conditions fire together.
+    Requiring all three (rather than any one) was worth roughly 9x the gross
+    edge in testing -- single-condition exits cut winners at the first wiggle."""
+    if not USE_MACD_DIP_GATE:
+        return False, "gate disabled"
+    try:
+        c = np.asarray(closes, dtype=float)
+        i = len(c) - 1 if idx == -1 else idx
+        if i < 40:
+            return False, "not enough bars"
+        macd_line, macd_sig, _ = talib.MACD(c, fastperiod=12, slowperiod=26, signalperiod=9)
+        hist = macd_line - macd_sig
+        rsi_arr = talib.RSI(c, timeperiod=14)
+        peak_down = hist[i] < hist[i - 1] and hist[i - 1] >= hist[i - 2]
+        price_down = c[i] < c[i - 1]
+        rsi_weak = not (np.isfinite(rsi_arr[i]) and rsi_arr[i] > MACD_DIP_EXIT_RSI)
+        if peak_down and price_down and rsi_weak:
+            return True, "macd peak + price down + rsi below 70"
+        return False, "holding"
+    except Exception as e:
+        logging.warning(f"macd_dip_exit_now failed: {e}")
+        return False, "error"
+# ============================================================================
+# END V19 ADDITION
+# ============================================================================
 # 20-day bullish momentum gate: only buy stocks up more than this over the
 # last 20 trading days (daily closes). 0.05 = +5%. Set USE_..._FILTER False to disable.
 USE_20D_MOMENTUM_FILTER = True
