@@ -13028,7 +13028,7 @@ def v18_close_floor_session():
         try:
             _s = Session()
             try:
-                today = datetime.now(ZoneInfo("America/New_York")).date()
+                today = datetime.now(eastern).date()
                 todays = [r for r in _s.query(TradeHistory)
                                        .filter(TradeHistory.action == 'sell')
                                        .all()
@@ -25417,7 +25417,7 @@ def v18_build_inputs(symbol, regime=None, vix=None):
         try: return float(x[3][-1] / _np.mean(x[3][-k:]) - 1.0)
         except Exception: return 0.0
     try:
-        now_et = datetime.now(ZoneInfo("America/New_York"))
+        now_et = datetime.now(eastern)
         tod = max(0.0, min(1.0, ((now_et.hour * 60 + now_et.minute) - 570) / 390.0))
         wd = now_et.weekday()
     except Exception:
@@ -25499,11 +25499,11 @@ def v18_risk_state(symbol, regime=None, vix=None):
     try: st.emergency_stop = bool(is_dashboard_emergency_stopped())
     except Exception: pass
     try:
-        now_et = datetime.now(ZoneInfo("America/New_York"))
+        now_et = datetime.now(eastern)
         close_et = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
         st.minutes_to_close = max(0.0, (close_et - now_et).total_seconds() / 60.0)
-        cutoff = now_et.replace(hour=EARLY_MORNING_CUTOFF_ET[0],
-                                minute=EARLY_MORNING_CUTOFF_ET[1],
+        cutoff = now_et.replace(hour=EARLY_MORNING_CUTOFF_ET.hour,
+                                minute=EARLY_MORNING_CUTOFF_ET.minute,
                                 second=0, microsecond=0)
         st.is_early_morning_blocked = now_et < cutoff
     except Exception: pass
