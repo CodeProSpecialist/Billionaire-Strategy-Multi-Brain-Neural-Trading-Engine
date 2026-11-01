@@ -10725,6 +10725,7 @@ CACHE_TTLS = {
     'earnings_date': 21600,        # 6h  - next earnings date per symbol
     'relative_strength': 1800,     # 30m - RS vs SPY / sector proxy
     'pb_60m': 240,                 # 4m  - hourly bars for the regime playbook
+    'ce_macd_1m': 45,              # 45s - 1m Chandelier Exit + MACD histogram
 }
 
 CALLS = 60
@@ -10934,6 +10935,531 @@ def get_intraday_vwap(symbol):
     except Exception as e:
         logging.debug(f"get_intraday_vwap({symbol}) cache path raised: {e}")
         return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  1-MINUTE SIGNAL ENGINE: CHANDELIER EXIT (everget) + MACD HISTOGRAM PIVOTS
+# ═══════════════════════════════════════════════════════════════════════════
+# Operator rule, taken from the TradingView 1m NVDA chart:
+#   TOP PANEL    -- Chandelier Exit (everget), "CE 22 3": the green/red step
+#                   line with the Buy / Sell labels. Buy label = direction
+#                   flips short->long. Sell label = direction flips long->short.
+#   BOTTOM PANEL -- MACD(12,26,9) histogram: buy at the bottom of the red dip,
+#                   sell at the top of the green climax.
+#
+# HONESTY NOTE (same spirit as the BACKTEST brain's note in this file):
+#   * The Chandelier Exit flip is exact and live -- everget's Pine prints the
+#     label on the bar the direction variable flips, and so do we. No fudging.
+#   * The exact lowest bar of a red dip / tallest bar of a green climax is
+#     NOT knowable until at least one bar later. Any "signal" that fires on
+#     the precise extreme bar is look-ahead bias. So the histogram side fires
+#     on a CONFIRMED pivot: the histogram must reach meaningful depth/height
+#     and then reverse for CE_MACD_CONFIRM_BARS consecutive bars, at which
+#     point the bar CE_MACD_CONFIRM_BARS back is declared the extreme. Cost:
+#     ~2 minutes of slippage vs the theoretical perfect bar. Set
+#     CE_MACD_CONFIRM_BARS = 1 for a faster, noisier trigger.
+#
+# Combine logic (both configurable below):
+#   BUY  = Chandelier flip-to-long AND confirmed histogram dip bottom
+#          (CE_BUY_COMBINE = 'and'; use 'or' / 'ce' / 'macd' to loosen)
+#   SELL = Chandelier flip-to-short OR confirmed histogram climax top
+#          (CE_SELL_COMBINE = 'or' -- exits should be eager, entries picky)
+
+CE_SIGNAL_MODE        = 'armed'   # 'armed' | 'shadow' | 'off'
+CE_REQUIRE_FOR_BUY    = True      # armed: no buy signal -> no entry
+CE_SELL_ENABLED       = True      # armed: sell signal -> exit
+CE_BUY_COMBINE        = 'and'     # 'and' | 'or' | 'ce' | 'macd'
+CE_SELL_COMBINE       = 'or'      # 'and' | 'or' | 'ce' | 'macd'
+
+CE_INTERVAL           = '1m'
+CE_PERIOD             = '2d'      # 2 sessions of 1m bars = warmup for both
+
+# --- Chandelier Exit (everget) defaults, matching "CE 22 3" on the chart ---
+CE_ATR_PERIOD         = 22
+CE_ATR_MULT           = 3.0
+CE_USE_CLOSE_EXTREMES = True      # everget's useClose default is true
+CE_MAX_BARS_SINCE     = 3         # flip must be this fresh to still act on
+
+# --- MACD histogram pivot detector ---
+CE_MACD_FAST          = 12
+CE_MACD_SLOW          = 26
+CE_MACD_SIGNAL        = 9
+CE_MACD_CONFIRM_BARS  = 2         # bars of reversal needed to confirm a pivot
+CE_MACD_LOOKBACK      = 90        # bars used for the depth/height scale
+CE_MACD_MIN_DEPTH_FRAC= 0.35      # pivot must reach 35% of the recent extreme
+CE_MACD_MAX_BARS_SINCE= 5         # pivot must still be fresh to act on
+# Absolute floor, as a fraction of price. The depth test above is RELATIVE to
+# the symbol's own recent histogram range, so on a dead-flat symbol a
+# meaningless 0.03-wide wiggle scores as a "deep" dip. This floor kills that:
+# on a $205 stock, 0.0002 = a histogram swing of at least ~0.041, which is
+# roughly the size of the real dips on the 1m NVDA chart this rule came from.
+CE_MACD_MIN_HIST_FRAC = 0.0002
+
+CE_SELL_MIN_GAIN      = 0.0       # only take the signal exit at >= breakeven
+CE_SELL_AT_A_LOSS     = False     # True lets the signal exit cut losers too
+CE_SCORE_BUMP         = 0.75      # buy-score bump on a fresh confluent signal
+
+
+def _chandelier_exit_everget(high, low, close):
+    """Faithful port of everget's TradingView "Chandelier Exit" Pine script.
+
+        atr        = mult * atr(length)
+        longStop   = highest(src, length) - atr
+        longStop  := close[1] > longStopPrev  ? max(longStop, longStopPrev)  : longStop
+        shortStop  = lowest(src, length) + atr
+        shortStop := close[1] < shortStopPrev ? min(shortStop, shortStopPrev) : shortStop
+        dir       := close > shortStopPrev ? 1 : close < longStopPrev ? -1 : dir
+        buySignal  = dir ==  1 and dir[1] == -1
+        sellSignal = dir == -1 and dir[1] ==  1
+
+    src is close when CE_USE_CLOSE_EXTREMES (everget's useClose default),
+    otherwise the raw high/low. Returns (long_stop, short_stop, direction)
+    as numpy arrays, or None when there isn't enough history.
+    """
+    n = len(close)
+    length = int(CE_ATR_PERIOD)
+    if n < length + 2:
+        return None
+    try:
+        atr = talib.ATR(high, low, close, timeperiod=length) * float(CE_ATR_MULT)
+    except Exception:
+        return None
+
+    hi_src = close if CE_USE_CLOSE_EXTREMES else high
+    lo_src = close if CE_USE_CLOSE_EXTREMES else low
+    try:
+        hh = talib.MAX(hi_src, timeperiod=length)
+        ll = talib.MIN(lo_src, timeperiod=length)
+    except Exception:
+        return None
+
+    long_stop  = np.full(n, np.nan)
+    short_stop = np.full(n, np.nan)
+    direction  = np.ones(n, dtype=int)   # Pine's `var int dir = 1`
+
+    for i in range(n):
+        if not (np.isfinite(atr[i]) and np.isfinite(hh[i]) and np.isfinite(ll[i])):
+            if i > 0:
+                direction[i] = direction[i - 1]
+            continue
+        ls = hh[i] - atr[i]
+        ss = ll[i] + atr[i]
+        # nz(longStop[1], longStop) -- previous value, or this bar's if none yet
+        ls_prev = long_stop[i - 1] if i > 0 and np.isfinite(long_stop[i - 1]) else ls
+        ss_prev = short_stop[i - 1] if i > 0 and np.isfinite(short_stop[i - 1]) else ss
+        # The stops only ratchet while the PREVIOUS close is on the right side
+        if i > 0 and close[i - 1] > ls_prev:
+            ls = max(ls, ls_prev)
+        if i > 0 and close[i - 1] < ss_prev:
+            ss = min(ss, ss_prev)
+        long_stop[i]  = ls
+        short_stop[i] = ss
+        prev_dir = direction[i - 1] if i > 0 else 1
+        if close[i] > ss_prev:
+            direction[i] = 1
+        elif close[i] < ls_prev:
+            direction[i] = -1
+        else:
+            direction[i] = prev_dir
+    return long_stop, short_stop, direction
+
+
+def _ce_latest_flip(direction):
+    """Most recent direction flip. Returns (kind, bars_since) where kind is
+    'BUY' (short->long) or 'SELL' (long->short), or (None, None)."""
+    n = len(direction)
+    for i in range(n - 1, 0, -1):
+        if direction[i] != direction[i - 1]:
+            kind = 'BUY' if direction[i] == 1 else 'SELL'
+            return kind, int(n - 1 - i)
+    return None, None
+
+
+def _macd_pivot_find(hist, sign, min_abs=0.0):
+    """Most recent CONFIRMED MACD-histogram pivot.
+    sign = -1 -> trough (bottom of the red dip)  -> buy side
+    sign = +1 -> peak   (top of the green climax)-> sell side
+    Both are the same search for a maximum of v = hist * sign."""
+    try:
+        h = np.asarray(hist, dtype=float)
+        h = h[np.isfinite(h)]
+    except Exception:
+        return None
+    cb = max(1, int(CE_MACD_CONFIRM_BARS))
+    if h.size < (CE_MACD_SLOW + CE_MACD_SIGNAL + cb + 3):
+        return None
+    h = h[-CE_MACD_LOOKBACK:]
+    v = h * float(sign)
+    n = v.size
+
+    # Depth scale: how big a dip/climax has looked lately on THIS symbol.
+    # 80th percentile of |hist| is robust to a single freak bar.
+    try:
+        scale = float(np.percentile(np.abs(h), 80))
+    except Exception:
+        scale = 0.0
+    if not np.isfinite(scale) or scale <= 0:
+        scale = float(np.max(np.abs(h))) if n else 0.0
+    if scale <= 0:
+        return None
+    min_depth = max(scale * float(CE_MACD_MIN_DEPTH_FRAC), float(min_abs or 0.0))
+
+    newest = n - 1 - cb
+    oldest = max(1, n - 1 - cb - int(CE_MACD_MAX_BARS_SINCE))
+    for p in range(newest, oldest - 1, -1):
+        if p < 1:
+            break
+        if v[p] < min_depth:                       # deep/tall enough?
+            continue
+        if not (v[p] >= v[p - 1]):                 # genuine local extreme?
+            continue
+        if not all(v[p + k + 1] < v[p + k] for k in range(cb)):   # reversed?
+            continue
+        return {
+            'pivot_value': float(h[p]),
+            'bars_since': int(n - 1 - p),
+            'confirm_bars': cb,
+            'scale': float(scale),
+            'depth_frac': float(v[p] / scale) if scale else 0.0,
+            'last_hist': float(h[-1]),
+        }
+    return None
+
+
+def _fetch_ce_macd_signal(symbol):
+    """Raw (uncached) 1-minute Chandelier-Exit + MACD-histogram read."""
+    out = {'symbol': symbol, 'ok': False, 'buy_signal': False,
+           'sell_signal': False, 'ce_flip': None, 'ce_bars_since': None,
+           'ce_direction': None, 'ce_long_stop': None, 'ce_short_stop': None,
+           'macd_trough': None, 'macd_peak': None, 'last_hist': None,
+           'reason': 'no data'}
+    if CE_SIGNAL_MODE == 'off':
+        out['reason'] = 'mode=off'
+        return out
+    try:
+        df = yf_history(symbol, period=CE_PERIOD, interval=CE_INTERVAL,
+                        prepost=False, auto_adjust=False)
+    except Exception as e:
+        out['reason'] = f'fetch failed: {e}'
+        logging.debug(f"ce_macd: fetch failed for {symbol}: {e}")
+        return out
+    if df is None or df.empty:
+        return out
+    try:
+        high  = df['High'].astype(float).to_numpy().flatten()
+        low   = df['Low'].astype(float).to_numpy().flatten()
+        close = df['Close'].astype(float).to_numpy().flatten()
+        mask = np.isfinite(high) & np.isfinite(low) & np.isfinite(close)
+        high, low, close = high[mask], low[mask], close[mask]
+    except Exception as e:
+        out['reason'] = f'bad OHLC series: {e}'
+        return out
+    need = max(CE_ATR_PERIOD + 2, CE_MACD_SLOW + CE_MACD_SIGNAL + 5)
+    if close.size < need:
+        out['reason'] = f'only {close.size} 1m bars (need {need})'
+        return out
+
+    # ---- top panel: Chandelier Exit (everget) ----
+    ce = _chandelier_exit_everget(high, low, close)
+    ce_buy = ce_sell = False
+    if ce is not None:
+        long_stop, short_stop, direction = ce
+        flip, bars_since = _ce_latest_flip(direction)
+        out['ce_direction'] = int(direction[-1])
+        out['ce_flip'] = flip
+        out['ce_bars_since'] = bars_since
+        if np.isfinite(long_stop[-1]):
+            out['ce_long_stop'] = round(float(long_stop[-1]), 4)
+        if np.isfinite(short_stop[-1]):
+            out['ce_short_stop'] = round(float(short_stop[-1]), 4)
+        fresh = bars_since is not None and bars_since <= int(CE_MAX_BARS_SINCE)
+        ce_buy  = bool(flip == 'BUY' and fresh)
+        ce_sell = bool(flip == 'SELL' and fresh)
+
+    # ---- bottom panel: MACD(12,26,9) histogram pivots ----
+    macd_buy = macd_sell = False
+    try:
+        _line, _sig, hist = talib.MACD(close, fastperiod=CE_MACD_FAST,
+                                       slowperiod=CE_MACD_SLOW,
+                                       signalperiod=CE_MACD_SIGNAL)
+        if np.isfinite(hist[-1]):
+            out['last_hist'] = round(float(hist[-1]), 5)
+        _min_abs = float(close[-1]) * float(CE_MACD_MIN_HIST_FRAC)
+        out['macd_trough'] = _macd_pivot_find(hist, -1, _min_abs)
+        out['macd_peak']   = _macd_pivot_find(hist, +1, _min_abs)
+        macd_buy  = out['macd_trough'] is not None
+        macd_sell = out['macd_peak'] is not None
+    except Exception as e:
+        logging.debug(f"ce_macd: MACD failed for {symbol}: {e}")
+
+    def _combine(mode, a, b):
+        if mode == 'ce':   return a
+        if mode == 'macd': return b
+        if mode == 'or':   return a or b
+        return a and b                      # default 'and'
+
+    out['ok'] = True
+    out['ce_buy'], out['ce_sell'] = ce_buy, ce_sell
+    out['macd_buy'], out['macd_sell'] = macd_buy, macd_sell
+    out['buy_signal']  = bool(_combine(CE_BUY_COMBINE,  ce_buy,  macd_buy))
+    out['sell_signal'] = bool(_combine(CE_SELL_COMBINE, ce_sell, macd_sell))
+
+    bits = []
+    if ce_buy:   bits.append(f"CE BUY flip {out['ce_bars_since']}b ago")
+    if ce_sell:  bits.append(f"CE SELL flip {out['ce_bars_since']}b ago")
+    if macd_buy:
+        t = out['macd_trough']
+        bits.append(f"macd dip bottom {t['pivot_value']:+.4f} "
+                    f"({t['depth_frac']*100:.0f}% of recent extreme, "
+                    f"{t['bars_since']}b ago, rising since)")
+    if macd_sell:
+        p = out['macd_peak']
+        bits.append(f"macd green climax {p['pivot_value']:+.4f} "
+                    f"({p['depth_frac']*100:.0f}% of recent extreme, "
+                    f"{p['bars_since']}b ago, falling since)")
+    if not bits:
+        bits.append(f"no fresh signal (CE dir="
+                    f"{'long' if out['ce_direction'] == 1 else 'short'}, "
+                    f"hist={out['last_hist']})")
+    out['reason'] = '; '.join(bits)
+    return out
+
+
+def get_ce_macd_signal(symbol):
+    """Cached wrapper. 1-minute bars only change once a minute, so the raw
+    fetch is throttled to CACHE_TTLS['ce_macd_1m'] per symbol -- both the buy
+    and sell loops can call this every tick for free once warm."""
+    try:
+        r = get_cached_data(symbol, 'ce_macd_1m', _fetch_ce_macd_signal, symbol)
+        return r or {'symbol': symbol, 'ok': False, 'buy_signal': False,
+                     'sell_signal': False, 'reason': 'cache miss'}
+    except Exception as e:
+        logging.debug(f"get_ce_macd_signal({symbol}) raised: {e}")
+        return {'symbol': symbol, 'ok': False, 'buy_signal': False,
+                'sell_signal': False, 'reason': f'error: {e}'}
+
+
+def ce_macd_buy_gate(symbol):
+    """(allow, reason) for the buy path. Fail-OPEN on data errors so a
+    yfinance hiccup can't silently halt all trading; fail-CLOSED only on a
+    clean read that shows no signal."""
+    if CE_SIGNAL_MODE == 'off' or not CE_REQUIRE_FOR_BUY:
+        return True, 'ce/macd gate disabled'
+    r = get_ce_macd_signal(symbol)
+    if not r.get('ok'):
+        return True, f"ce/macd unavailable ({r.get('reason')}) — fail-open"
+    if r.get('buy_signal'):
+        return True, r.get('reason', 'buy signal')
+    if CE_SIGNAL_MODE == 'shadow':
+        return True, f"[SHADOW would-deny] {r.get('reason')}"
+    return False, r.get('reason', 'no buy signal')
+
+
+def ce_macd_buy_bump(symbol):
+    """Score bump when both panels agree. Never a gate; 0.0 on error."""
+    try:
+        if CE_SIGNAL_MODE == 'off' or CE_SCORE_BUMP <= 0:
+            return 0.0, ''
+        r = get_ce_macd_signal(symbol)
+        if not r.get('ok'):
+            return 0.0, ''
+        ce_b, macd_b = bool(r.get('ce_buy')), bool(r.get('macd_buy'))
+        if not (ce_b or macd_b):
+            return 0.0, ''
+        # Full bump only on confluence; half for a single panel.
+        factor = 1.0 if (ce_b and macd_b) else 0.5
+        t = r.get('macd_trough') or {}
+        depth = min(1.0, abs(t.get('depth_frac', 0.0))) if macd_b else 0.0
+        fresh_src = (r.get('ce_bars_since') if ce_b
+                     else t.get('bars_since', 0))
+        span = float(max(1, (CE_MAX_BARS_SINCE if ce_b
+                             else CE_MACD_MAX_BARS_SINCE) + 1))
+        freshness = max(0.0, 1.0 - ((fresh_src or 0) / span))
+        bump = round(CE_SCORE_BUMP * factor * (0.5 + 0.25 * depth
+                                               + 0.25 * freshness), 3)
+        tag = 'CE+MACD' if (ce_b and macd_b) else ('CE' if ce_b else 'MACD')
+        return bump, f"{tag}_buy={bump:+.2f}"
+    except Exception:
+        return 0.0, ''
+
+
+def ce_macd_sell_check(symbol, gain_now):
+    """(should_sell, reason) for the sell path.
+
+    gain_now is the fractional unrealized gain (0.01 == +1%). By default the
+    signal exit only fires at or above breakeven -- the hard stop, chandelier
+    ATR trail and bad-news stop own the losing side, and we don't want a
+    1-minute rollover inside a drawdown to lock in a loss the trail would
+    have ridden out. Set CE_SELL_AT_A_LOSS = True to change that.
+    """
+    if CE_SIGNAL_MODE == 'off' or not CE_SELL_ENABLED:
+        return False, 'ce/macd sell disabled'
+    try:
+        r = get_ce_macd_signal(symbol)
+    except Exception as e:
+        return False, f'ce/macd error: {e}'
+    if not r.get('ok') or not r.get('sell_signal'):
+        return False, r.get('reason', 'no sell signal')
+    if not CE_SELL_AT_A_LOSS and gain_now < CE_SELL_MIN_GAIN:
+        return False, (f"sell signal but gain {gain_now*100:+.2f}% < "
+                       f"{CE_SELL_MIN_GAIN*100:+.2f}% floor — holding")
+    if CE_SIGNAL_MODE == 'shadow':
+        return False, f"[SHADOW would-sell] {r.get('reason')}"
+    return True, r.get('reason', 'sell signal')
+
+
+# ---------------- Dashboard chart feed: 1m candles + CE + MACD + RSI -------
+# Powers the per-position chart tile on alpaca_dashboard_v18.html. One entry
+# per OWNED position, shaped to mirror the operator's TradingView layout:
+# candlesticks with the Chandelier Exit step-line and its Buy/Sell labels on
+# top, the MACD(12,26,9) histogram underneath, and the live RSI(14) value.
+CE_CHART_BARS = 90        # 1m candles sent to the browser per position
+CE_CHART_TTL  = 30        # seconds; the tile redraws from cache in between
+
+
+def _fetch_ce_chart_series(symbol):
+    """Raw (uncached) chart payload for one symbol. Returns a JSON-safe dict."""
+    out = {'symbol': symbol, 'ok': False, 'bars': [], 'ce': [],
+           'signals': [], 'hist': [], 'rsi': None, 'direction': None,
+           'error': None}
+    try:
+        df = yf_history(symbol, period=CE_PERIOD, interval=CE_INTERVAL,
+                        prepost=False, auto_adjust=False)
+    except Exception as e:
+        out['error'] = f'fetch failed: {e}'
+        return out
+    if df is None or df.empty:
+        out['error'] = 'no bars'
+        return out
+    try:
+        o = df['Open'].astype(float).to_numpy().flatten()
+        h = df['High'].astype(float).to_numpy().flatten()
+        l = df['Low'].astype(float).to_numpy().flatten()
+        c = df['Close'].astype(float).to_numpy().flatten()
+        idx = df.index
+        m = np.isfinite(o) & np.isfinite(h) & np.isfinite(l) & np.isfinite(c)
+        o, h, l, c = o[m], h[m], l[m], c[m]
+        idx = idx[m]
+    except Exception as e:
+        out['error'] = f'bad OHLC: {e}'
+        return out
+    need = max(CE_ATR_PERIOD + 2, CE_MACD_SLOW + CE_MACD_SIGNAL + 5)
+    if c.size < need:
+        out['error'] = f'only {c.size} bars (need {need})'
+        return out
+
+    # Chandelier Exit (everget) over the FULL series so the stop has warmed
+    # up properly, then slice the tail for display.
+    ce = _chandelier_exit_everget(h, l, c)
+    long_stop = short_stop = direction = None
+    if ce is not None:
+        long_stop, short_stop, direction = ce
+
+    try:
+        _ln, _sg, hist = talib.MACD(c, fastperiod=CE_MACD_FAST,
+                                    slowperiod=CE_MACD_SLOW,
+                                    signalperiod=CE_MACD_SIGNAL)
+    except Exception:
+        hist = np.full(c.size, np.nan)
+    try:
+        rsi_arr = talib.RSI(c, timeperiod=14)
+        if np.isfinite(rsi_arr[-1]):
+            out['rsi'] = round(float(rsi_arr[-1]), 2)
+    except Exception:
+        pass
+
+    n = c.size
+    k = min(int(CE_CHART_BARS), n)
+    s0 = n - k
+
+    def _t(i):
+        try:
+            return str(idx[i])[:19]
+        except Exception:
+            return ''
+
+    bars, ce_line, hist_out, signals = [], [], [], []
+    for i in range(s0, n):
+        bars.append({'t': _t(i), 'o': round(float(o[i]), 4),
+                     'h': round(float(h[i]), 4), 'l': round(float(l[i]), 4),
+                     'c': round(float(c[i]), 4)})
+        hv = hist[i] if i < len(hist) else np.nan
+        hist_out.append(round(float(hv), 5) if np.isfinite(hv) else None)
+        if direction is not None:
+            d = int(direction[i])
+            # The visible line is whichever stop is currently active -- the
+            # long stop under price in an uptrend, the short stop above it in
+            # a downtrend. That is exactly what everget's script plots.
+            stop = long_stop[i] if d == 1 else short_stop[i]
+            ce_line.append({'v': round(float(stop), 4)
+                            if np.isfinite(stop) else None, 'd': d})
+            if i > 0 and int(direction[i - 1]) != d:
+                signals.append({'i': i - s0, 'type': 'BUY' if d == 1 else 'SELL',
+                                'price': round(float(c[i]), 4), 't': _t(i)})
+        else:
+            ce_line.append({'v': None, 'd': 0})
+
+    out['ok'] = True
+    out['bars'] = bars
+    out['ce'] = ce_line
+    out['hist'] = hist_out
+    out['signals'] = signals
+    if direction is not None:
+        out['direction'] = int(direction[-1])
+        out['long_stop'] = (round(float(long_stop[-1]), 4)
+                            if np.isfinite(long_stop[-1]) else None)
+        out['short_stop'] = (round(float(short_stop[-1]), 4)
+                             if np.isfinite(short_stop[-1]) else None)
+    out['last_price'] = round(float(c[-1]), 4)
+    return out
+
+
+_ce_chart_cache = {}
+_ce_chart_lock = threading.Lock()
+
+
+def get_ce_chart_series(symbol):
+    """Cached chart payload. The dashboard broadcasts ~1Hz but 1-minute bars
+    only move once a minute, so this is throttled to CE_CHART_TTL seconds per
+    symbol -- otherwise the tile alone would exhaust the yfinance budget."""
+    now = time.time()
+    with _ce_chart_lock:
+        hit = _ce_chart_cache.get(symbol)
+        if hit and hit[0] > now:
+            return hit[1]
+    try:
+        payload = _fetch_ce_chart_series(symbol)
+    except Exception as e:
+        payload = {'symbol': symbol, 'ok': False, 'error': str(e),
+                   'bars': [], 'ce': [], 'hist': [], 'signals': [],
+                   'rsi': None}
+    with _ce_chart_lock:
+        _ce_chart_cache[symbol] = (now + CE_CHART_TTL, payload)
+        # Drop charts for symbols we no longer hold so the cache can't grow
+        # without bound across a long session.
+        if len(_ce_chart_cache) > 40:
+            for k in [k for k, v in list(_ce_chart_cache.items())
+                      if v[0] < now - 300]:
+                _ce_chart_cache.pop(k, None)
+    return payload
+
+
+def get_position_charts(max_positions=8):
+    """Chart payloads for every CURRENTLY OWNED position, newest cache first.
+    Capped at max_positions so a large book can't stall the broadcast tick."""
+    try:
+        syms = list(position_book.symbols())
+    except Exception:
+        syms = []
+    charts = []
+    for sym in syms[:max_positions]:
+        try:
+            charts.append(get_ce_chart_series(sym))
+        except Exception as e:
+            charts.append({'symbol': sym, 'ok': False, 'error': str(e),
+                           'bars': [], 'ce': [], 'hist': [], 'signals': [],
+                           'rsi': None})
+    return charts
 
 
 def _alpaca_daily_bars_batch(symbols, days):
@@ -16881,6 +17407,25 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
             elif em_reason.startswith('[SHADOW would-deny]'):
                 print(f"  [early-gate SHADOW] {yf_symbol}: {em_reason} (would-block, letting through)")
 
+            # ---------------- CE + MACD 1-minute entry signal ----------------
+            # Operator rule from the TradingView chart: Chandelier Exit
+            # (everget, CE 22 3) must print a BUY flip AND the MACD histogram
+            # must have put in a confirmed bottom in the red dip. Combine mode
+            # is CE_BUY_COMBINE. Fail-open on data errors.
+            ce_allow, ce_reason = ce_macd_buy_gate(yf_symbol)
+            if not ce_allow:
+                print(f"{yf_symbol}: {DIM}ce/macd entry gate:{RESET} {ce_reason}. Skipping.")
+                logging.info(f"{now_str} Skipped {yf_symbol}: ce/macd gate — {ce_reason}")
+                update_previous_price(symbol, current_price)
+                continue
+            elif ce_reason.startswith('[SHADOW would-deny]'):
+                print(f"  [ce/macd SHADOW] {yf_symbol}: {ce_reason} (would-block, letting through)")
+            ce_bump, ce_bump_reason = ce_macd_buy_bump(yf_symbol)
+            if ce_bump:
+                sig['score'] += ce_bump
+                sig['reasons'].append(ce_bump_reason)
+                print(f"  [ce/macd] {yf_symbol}: {ce_reason} -> score {ce_bump:+.2f}")
+
             # REVIEW ITEM #4: rank by an empirical expected-return estimate
             # when enough of this bot's own trade history exists at this
             # score level; otherwise fall back to the raw score, exactly as
@@ -18689,6 +19234,43 @@ def _sell_stocks_body(lock):
                 print(f"{symbol}: chandelier_daily_sell pending "
                       f"(confirm={ch_sell.get('confirm_score', 0)}/3, "
                       f"bars_since_sell={ch_sell.get('bars_since_sell')}).")
+
+            # ---------------- CE + MACD 1-minute exit signal ----------------
+            # Operator rule from the chart: exit on the Chandelier Exit
+            # (everget, CE 22 3) SELL flip OR on a confirmed MACD-histogram
+            # green-climax top, whichever comes first (CE_SELL_COMBINE).
+            # Placed ahead of the ATR trail and profit monitor so a rollover
+            # is taken at the signal rather than after the trail has already
+            # given the run back. Gated to >= CE_SELL_MIN_GAIN so it never
+            # converts a drawdown into a realized loss -- the hard stop owns
+            # that side.
+            try:
+                ce_sell, ce_sell_reason = ce_macd_sell_check(symbol, gain_now)
+            except Exception as _e:
+                ce_sell, ce_sell_reason = False, f'ce/macd sell error: {_e}'
+            if ce_sell and qty and qty > 0:
+                print(f"{symbol}: {GREEN}CE/MACD SIGNAL EXIT{RESET} — "
+                      f"{ce_sell_reason} (entry ${bought_price:.2f}, "
+                      f"current ${current_price:.2f}, {gain_now*100:+.2f}%).")
+                logging.info(f"{now_str} CE/MACD SIGNAL EXIT for {symbol}: "
+                             f"{ce_sell_reason}")
+                _cancel_existing_sell_orders(symbol, "CE/MACD EXIT", now_str)
+                filled_qty, notional, steps = _sell_with_escalation(
+                    symbol, qty, current_price, 'market', 'day',
+                    "CE/MACD EXIT", now_str)
+                if filled_qty > 0:
+                    avg_fill_price = notional / filled_qty
+                    logging.info(f"{now_str} CE/MACD EXIT sold {symbol}: "
+                                 f"{filled_qty:.4f} sh @ avg ${avg_fill_price:.2f} "
+                                 f"via [{', '.join(steps)}].")
+                    to_remove.append((symbol, filled_qty, avg_fill_price))
+                else:
+                    print(f"{symbol}: {RED}ce/macd exit escalation produced no "
+                          f"fill{RESET} -- position remains open, will retry "
+                          f"next cycle.")
+                continue
+            elif ce_sell_reason.startswith('[SHADOW would-sell]'):
+                print(f"  [ce/macd SHADOW] {symbol}: {ce_sell_reason}")
 
             # ---------------- Chandelier ATR trailing stop ----------------
             # Dynamic volatility-adjusted trail. Fires between the deep hard
@@ -20735,6 +21317,15 @@ class DashboardWSEngine:
             }
         except Exception as e:
             state['brain_f'] = {'error': str(e)}
+
+        # Per-position 1m chart tile: candlesticks + Chandelier Exit step
+        # line with its Buy/Sell flips, MACD(12,26,9) histogram, live RSI(14).
+        # Throttled internally (CE_CHART_TTL) so the ~1Hz broadcast doesn't
+        # hammer the shared yfinance budget.
+        try:
+            state['position_charts'] = get_position_charts()
+        except Exception as e:
+            state['position_charts'] = [{'error': str(e)}]
 
         # Muted symbols
         try:
