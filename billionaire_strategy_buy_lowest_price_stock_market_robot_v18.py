@@ -10063,8 +10063,17 @@ MAX_NEW_POSITIONS_PER_CYCLE = 3  # rank all qualifying candidates, only buy the 
 # No configuration tested was profitable out-of-sample. This mode is armed at
 # the operator's explicit instruction after being shown these numbers. Set
 # ONE_PER_DAY_MODE='shadow' to log entries/exits without placing orders.
-ONE_PER_DAY_MODE        = 'armed'   # 'armed' | 'shadow' | 'off'
-ONE_PER_DAY_MAX         = 1         # positions opened per trading day
+# DAILY CAP: OFF (2026-11-01, operator instruction -- "do not limit how many
+# buy orders are placed per day to not limit profit potential"). The machinery
+# is kept and still works; set ONE_PER_DAY_MODE='armed' to re-enable it. With
+# it off there is NO per-day ceiling on entries -- the only remaining throttle
+# is MAX_NEW_POSITIONS_PER_CYCLE (per CYCLE, not per day) and the gates.
+ONE_PER_DAY_MODE        = 'off'     # 'armed' | 'shadow' | 'off'
+ONE_PER_DAY_MAX         = 1         # positions per trading day WHEN armed
+
+# The composite ranker is INDEPENDENT of the daily cap -- which candidate
+# ranks highest still matters when several are bought in a cycle.
+COMPOSITE_RANK_MODE     = 'armed'   # 'armed' | 'off'
 ONE_PER_DAY_RANK_VOLUME = 1.0       # weight on relative-volume z-score
 ONE_PER_DAY_RANK_MOM20  = 1.0       # weight on 20-day momentum z-score
 ONE_PER_DAY_RANK_MCAP   = 1.0       # weight on market-cap z-score
@@ -17433,6 +17442,20 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
             # 30m, so on a warm cache they cost zero yfinance requests and reject
             # most symbols for free. Fetching the 90d history first (as before)
             # meant paying a request for every symbol that was about to be cut.
+            # ---------------- Trading universe ----------------
+            # Profitable NASDAQ technology, mid cap and up. Checked FIRST so
+            # excluded names cost no data fetches.
+            _uni_ok, _uni_why = in_trading_universe(yf_symbol)
+            if not _uni_ok:
+                update_previous_price(symbol, current_price)
+                continue
+            # Per-day entry ceiling, only when ONE_PER_DAY_MODE is armed.
+            if ONE_PER_DAY_MODE == 'armed' and one_per_day_slots_left() <= 0:
+                print(f"  [one-per-day] daily position already opened — "
+                      f"no further entries today.")
+                update_previous_price(symbol, current_price)
+                break
+
             if not is_in_uptrend(symbol):
                 print(f"{yf_symbol}: below 200-day SMA. Skipping.")
                 update_previous_price(symbol, current_price)
@@ -17894,7 +17917,7 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
             # z-scored across the candidate pool below -- the three are on
             # wildly different scales and cannot be summed raw.
             _rk_vol = _rk_m20 = _rk_mcap = None
-            if ONE_PER_DAY_MODE != 'off':
+            if COMPOSITE_RANK_MODE != 'off':
                 try:
                     _cl = df['Close'].values.astype(float).flatten()
                     _vl = df['Volume'].values.astype(float).flatten()
@@ -17980,7 +18003,7 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
     # Relative volume, 20-day return and dollar volume are on different
     # scales, so summing them raw would let whichever has the biggest numbers
     # decide everything. Falls back to the existing rank_score on any error.
-    if ONE_PER_DAY_MODE != 'off' and len(candidates) > 1:
+    if COMPOSITE_RANK_MODE != 'off' and len(candidates) > 1:
         try:
             def _z(key):
                 vals = [c.get(key) for c in candidates]
