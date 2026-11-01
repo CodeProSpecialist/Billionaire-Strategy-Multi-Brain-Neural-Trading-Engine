@@ -16722,6 +16722,76 @@ _WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
 _MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 
+# ---------------- Weekday bias entry gate -----------------------------------
+# Operator rule: lean into the historically bullish weekdays and do less
+# buying on the bearish ones. This reads the SAME weekday_stats that the
+# dashboard's "NASDAQ BULL-DAY ODDS" tile renders -- nasdaq_outlook_snapshot()
+# computes them from 2 years of QQQ daily bars and caches them once per day,
+# so this gate costs nothing extra and adapts if the pattern changes.
+#
+# Deliberately NOT a hardcoded Mon/Wed/Fri list. Measured on the last 500 QQQ
+# sessions:
+#     Mon  up 61.5%  mean +0.3169%      Tue  up 49.0%  mean +0.0379%
+#     Wed  up 62.7%  mean +0.2894%      Thu  up 44.9%  mean -0.1619%
+#     Fri  up 58.0%  mean -0.0768%
+# Friday has a healthy UP-RATE but a NEGATIVE mean return -- it wins slightly
+# more often than it loses and then gives it all back on the down days. A
+# hardcoded "Mon/Wed/Fri" list would have bought into that. Requiring BOTH a
+# decent up-rate and a positive mean return selects Mon and Wed, which is what
+# the numbers actually support.
+#
+# HONESTY NOTE, consistent with the tile's own reliability_note: the weekday
+# split is marginal. Mon/Wed/Fri vs Tue/Thu daily returns give a Welch t-test
+# of t=+1.90, p=0.058 -- NOT significant at the 0.05 level -- and while the
+# effect held in 3 of 4 sub-periods it flipped sign in the most recent one.
+# In a 1-minute backtest it reduced losses but did not turn the strategy
+# profitable. Treat this as a mild tilt, not an edge.
+WEEKDAY_BIAS_MODE          = 'armed'   # 'armed' | 'shadow' | 'off'
+WEEKDAY_BIAS_MIN_UP_RATE   = 0.52      # weekday must win at least this often
+WEEKDAY_BIAS_REQUIRE_POS_AVG = True    # ...and have a positive mean return
+WEEKDAY_BIAS_MIN_SAMPLE    = 60        # sessions needed before trusting a weekday
+
+
+def check_weekday_bias_gate(now_et=None):
+    """(allow, reason) -- block new entries on historically bearish weekdays.
+
+    Reads nasdaq_outlook_snapshot()['weekday_stats'], the same data behind the
+    dashboard's bull-day-odds tile. Fails OPEN on any data problem.
+    """
+    if WEEKDAY_BIAS_MODE == 'off':
+        return True, 'weekday bias disabled'
+    try:
+        now_et = now_et or datetime.now(eastern)
+        wd = now_et.weekday()
+        if wd > 4:
+            return True, 'weekend (market closed anyway)'
+        snap = nasdaq_outlook_snapshot() or {}
+        stats = snap.get('weekday_stats') or []
+        if snap.get('error') or wd >= len(stats):
+            return True, f"weekday stats unavailable ({snap.get('error')}) — fail-open"
+        row = stats[wd] or {}
+        name = row.get('name') or _WEEKDAYS[wd]
+        up = row.get('up_rate')
+        avg = row.get('avg_ret')
+        n = int(row.get('n') or 0)
+        if up is None or avg is None or n < WEEKDAY_BIAS_MIN_SAMPLE:
+            return True, f'{name}: only {n} sessions on record — fail-open'
+        bad = []
+        if up < WEEKDAY_BIAS_MIN_UP_RATE:
+            bad.append(f'up-rate {up*100:.1f}% < {WEEKDAY_BIAS_MIN_UP_RATE*100:.0f}%')
+        if WEEKDAY_BIAS_REQUIRE_POS_AVG and avg <= 0:
+            bad.append(f'mean return {avg*100:+.3f}% not positive')
+        if not bad:
+            return True, (f'{name} is a historically bullish day '
+                          f'(up {up*100:.1f}%, mean {avg*100:+.3f}%, n={n})')
+        reason = f"{name} is historically bearish: " + ', '.join(bad) + f' (n={n})'
+        if WEEKDAY_BIAS_MODE == 'shadow':
+            return True, f'[SHADOW would-deny] {reason}'
+        return False, reason
+    except Exception as e:
+        return True, f'weekday bias error (fail-open): {e}'
+
+
 def nasdaq_outlook_snapshot():
     now_et = datetime.now(eastern)
     today = now_et.date()
@@ -16828,6 +16898,18 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
               f"{EARLY_MORNING_CUTOFF_ET.strftime('%H:%M')} ET — no buy orders "
               f"before 10:05 AM Eastern. Skipping cycle.")
         return
+
+    # ---------------- Weekday bias (cycle-level) ----------------
+    # Historically bearish weekdays get no new entries at all. Checked once
+    # per cycle rather than per symbol -- it is the same answer for every
+    # candidate, and skipping early saves the whole scan.
+    _wd_allow, _wd_reason = check_weekday_bias_gate()
+    if not _wd_allow:
+        print(f"  [weekday bias] {_wd_reason}. No new entries today. Skipping buy cycle.")
+        logging.info(f"Buy cycle skipped — weekday bias: {_wd_reason}")
+        return
+    elif _wd_reason.startswith('[SHADOW would-deny]'):
+        print(f"  [weekday bias SHADOW] {_wd_reason} (would-block, letting through)")
 
     # ═══ KSB: push fresh state into brain-suite bus ═══
     # Skip the whole KSB feed if the brain-suite worker is currently
