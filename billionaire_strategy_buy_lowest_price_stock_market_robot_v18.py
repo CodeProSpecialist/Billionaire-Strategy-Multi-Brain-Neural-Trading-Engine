@@ -11485,6 +11485,151 @@ def ce_macd_sell_check(symbol, gain_now):
     return True, r.get('reason', 'sell signal')
 
 
+# ---------------- Pre-trade backtest gate (120-day + 5-day) -----------------
+# Operator rule: before placing ANY buy order, replay this bot's own CE+MACD
+# entry/exit rules on that symbol's recent history and refuse the trade unless
+# the rules have actually been working on it lately. Two windows:
+#
+#   120-DAY  on 60-minute bars -- the medium-term question, "do these rules
+#            make money on this name at all?" 1-minute history does not reach
+#            back 120 days from any free feed, so 60m is the finest
+#            resolution available over that span.
+#   5-DAY    on 1-minute bars -- the short-term question, "are they working on
+#            it right now?" This is the real timeframe the bot trades.
+#
+# Both must pass. The 120-day window catches names the rules have never
+# handled well; the 5-day window catches names that have gone choppy this
+# week. Either one failing vetoes the buy.
+#
+# HONESTY NOTE: this is a genuine replay of the live entry/exit logic, not the
+# daily-bar proxy that Brain C uses -- but it is still backward-looking. A
+# symbol that backtested well for 120 days can still lose tomorrow, and
+# filtering on recent performance introduces its own selection bias (you end
+# up buying what has already worked, which is not the same as what will work).
+# It reduces exposure to names the rules demonstrably mishandle. It does not
+# make a negative-expectancy strategy positive.
+PRETRADE_BACKTEST_MODE      = 'armed'   # 'armed' | 'shadow' | 'off'
+PRETRADE_BT_LONG_DAYS       = 120       # medium window, 60m bars
+PRETRADE_BT_SHORT_DAYS      = 5         # short window, 1m bars
+PRETRADE_BT_LONG_MIN_RETURN = 0.0       # 120d replay total return must exceed
+PRETRADE_BT_SHORT_MIN_RETURN= 0.0       # 5d replay total return must exceed
+PRETRADE_BT_MIN_TRADES      = 3         # below this the window ABSTAINS (passes)
+PRETRADE_BT_STOP_PCT        = 0.01      # same stop the live path uses
+PRETRADE_BT_MAX_HOLD_BARS   = 60        # same hold ceiling, in bars
+PRETRADE_BT_CACHE_TTL       = 3600      # 1h per symbol per window
+
+_pretrade_bt_cache = {}
+_pretrade_bt_lock = threading.Lock()
+
+
+def _pretrade_replay(df, stop_pct, max_hold):
+    """Replay the live CE+MACD rules over one OHLC frame.
+
+    Entry : Chandelier Exit flips long AND a confirmed MACD histogram trough.
+    Exit  : CE flips short OR a confirmed MACD histogram peak (at a profit),
+            else the hard stop or the hold ceiling.
+    Returns (total_return, n_trades, win_rate) or (None, 0, None).
+    """
+    try:
+        if df is None or df.empty or len(df) < (CE_ATR_PERIOD + CE_MACD_SLOW + 20):
+            return None, 0, None
+        h = df['High'].astype(float).to_numpy().flatten()
+        l = df['Low'].astype(float).to_numpy().flatten()
+        c = df['Close'].astype(float).to_numpy().flatten()
+        m = np.isfinite(h) & np.isfinite(l) & np.isfinite(c)
+        h, l, c = h[m], l[m], c[m]
+        if c.size < (CE_ATR_PERIOD + CE_MACD_SLOW + 20):
+            return None, 0, None
+        ce = _chandelier_exit_everget(h, l, c)
+        if ce is None:
+            return None, 0, None
+        _ls, _ss, direction = ce
+        _line, _sig, hist = talib.MACD(c, fastperiod=CE_MACD_FAST,
+                                       slowperiod=CE_MACD_SLOW,
+                                       signalperiod=CE_MACD_SIGNAL)
+        min_abs = float(np.nanmedian(c)) * float(CE_MACD_MIN_HIST_FRAC)
+        rets = []
+        entry = None; entry_i = 0
+        start = max(CE_ATR_PERIOD + CE_MACD_SLOW + 5, 40)
+        for i in range(start, c.size):
+            if entry is None:
+                if direction[i] == 1 and direction[i - 1] == -1 \
+                        and _macd_pivot_find(hist[:i + 1], -1, min_abs):
+                    entry = float(c[i]); entry_i = i
+                continue
+            g = c[i] / entry - 1.0
+            ce_sell = (direction[i] == -1 and direction[i - 1] == 1)
+            peak = _macd_pivot_find(hist[:i + 1], +1, min_abs) is not None
+            if g <= -stop_pct or (i - entry_i) >= max_hold \
+                    or (g >= 0 and (ce_sell or peak)):
+                rets.append(g); entry = None
+        if not rets:
+            return None, 0, None
+        arr = np.array(rets, dtype=float)
+        return float(arr.sum()), int(arr.size), float((arr > 0).mean())
+    except Exception as e:
+        logging.debug(f"pretrade replay failed: {e}")
+        return None, 0, None
+
+
+def _pretrade_window(symbol, which):
+    """One cached window. which='long' (120d/60m) or 'short' (5d/1m)."""
+    key = (symbol, which)
+    now = time.time()
+    with _pretrade_bt_lock:
+        hit = _pretrade_bt_cache.get(key)
+        if hit and hit[0] > now:
+            return hit[1]
+    try:
+        if which == 'long':
+            df = yf_history(symbol, period=f'{int(PRETRADE_BT_LONG_DAYS)}d',
+                            interval='60m', prepost=False, auto_adjust=False)
+        else:
+            df = yf_history(symbol, period=f'{int(PRETRADE_BT_SHORT_DAYS)}d',
+                            interval='1m', prepost=False, auto_adjust=False)
+        res = _pretrade_replay(df, PRETRADE_BT_STOP_PCT, PRETRADE_BT_MAX_HOLD_BARS)
+    except Exception as e:
+        logging.debug(f"pretrade window {which} fetch failed for {symbol}: {e}")
+        res = (None, 0, None)
+    with _pretrade_bt_lock:
+        _pretrade_bt_cache[key] = (now + PRETRADE_BT_CACHE_TTL, res)
+        if len(_pretrade_bt_cache) > 400:
+            for k, v in list(_pretrade_bt_cache.items()):
+                if v[0] < now:
+                    _pretrade_bt_cache.pop(k, None)
+    return res
+
+
+def check_pretrade_backtest_gate(symbol):
+    """(allow, reason) -- replay the live rules on 120 days and 5 days.
+
+    Both windows must clear their minimum return. A window with fewer than
+    PRETRADE_BT_MIN_TRADES replayed trades ABSTAINS rather than vetoing --
+    too few samples is not evidence of failure. Fails OPEN on data errors.
+    """
+    if PRETRADE_BACKTEST_MODE == 'off':
+        return True, 'pre-trade backtest disabled'
+    notes, fails = [], []
+    for which, min_ret, label in (
+            ('long',  PRETRADE_BT_LONG_MIN_RETURN,  f'{PRETRADE_BT_LONG_DAYS}d/60m'),
+            ('short', PRETRADE_BT_SHORT_MIN_RETURN, f'{PRETRADE_BT_SHORT_DAYS}d/1m')):
+        tot, n, wr = _pretrade_window(symbol, which)
+        if tot is None or n < PRETRADE_BT_MIN_TRADES:
+            notes.append(f'{label}: only {n} replayed trade(s) — abstains')
+            continue
+        if tot <= min_ret:
+            fails.append(f'{label} replay {tot*100:+.2f}% over {n} trades '
+                         f'(win {wr*100:.0f}%)')
+        else:
+            notes.append(f'{label} {tot*100:+.2f}% / {n} trades / win {wr*100:.0f}%')
+    if not fails:
+        return True, 'pre-trade backtest: ' + ('; '.join(notes) if notes else 'ok')
+    reason = 'pre-trade backtest failed — ' + '; '.join(fails)
+    if PRETRADE_BACKTEST_MODE == 'shadow':
+        return True, f'[SHADOW would-deny] {reason}'
+    return False, reason
+
+
 # ---------------- Dashboard chart feed: 1m candles + CE + MACD + RSI -------
 # Powers the per-position chart tile on alpaca_dashboard_v18.html. One entry
 # per OWNED position, shaped to mirror the operator's TradingView layout:
@@ -17703,6 +17848,22 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
                 continue
             elif mom_reason.startswith('[SHADOW would-deny]'):
                 print(f"  [momentum SHADOW] {yf_symbol}: {mom_reason} (would-block, letting through)")
+
+            # ---------------- Pre-trade backtest (120-day + 5-day) ----------
+            # Last and most expensive gate in the chain: replays this bot's
+            # own CE+MACD rules on 120 days of 60m bars and 5 days of 1m bars
+            # for THIS symbol, and refuses the buy unless both windows show
+            # the rules have been working on it. Cached 1h per symbol.
+            pbt_allow, pbt_reason = check_pretrade_backtest_gate(yf_symbol)
+            if not pbt_allow:
+                print(f"{yf_symbol}: {DIM}pre-trade backtest:{RESET} {pbt_reason}. Skipping.")
+                logging.info(f"{now_str} Skipped {yf_symbol}: {pbt_reason}")
+                update_previous_price(symbol, current_price)
+                continue
+            elif pbt_reason.startswith('[SHADOW would-deny]'):
+                print(f"  [pretrade-bt SHADOW] {yf_symbol}: {pbt_reason} (would-block, letting through)")
+            else:
+                print(f"  [pretrade-bt] {yf_symbol}: {pbt_reason}")
 
             ce_bump, ce_bump_reason = ce_macd_buy_bump(yf_symbol)
             if ce_bump:
