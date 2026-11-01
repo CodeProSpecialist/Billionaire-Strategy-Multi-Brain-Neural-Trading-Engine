@@ -202,6 +202,13 @@ td.right, th.right { text-align: right; }
 .nq-msg { font-size:13px; line-height:1.45; margin:6px 0 10px; }
 .nq-small { font-size:11px; color:var(--fg3); line-height:1.45; }
 .nq-bars { display:grid; grid-template-columns:auto 1fr auto; gap:3px 8px; font-size:11px; align-items:center; margin-top:6px; }
+/* Owned Positions Summary tiles */
+.os-tile { border:1px solid var(--border); border-radius:6px; background:var(--bg2);
+           padding:8px 10px; min-width:0; }
+.os-lab  { font-size:9.5px; letter-spacing:.08em; color:var(--fg3); font-weight:700; }
+.os-val  { font-size:20px; font-weight:700; line-height:1.25;
+           font-family:var(--mono, ui-monospace,monospace); }
+.os-sub  { font-size:10.5px; color:var(--fg3); }
 .nq-bar { height:8px; border-radius:4px; background:var(--bg4, #2a2d3a); overflow:hidden; }
 .nq-bar > i { display:block; height:100%; }
 .cal-card .card-bd { min-height:560px; }
@@ -229,6 +236,61 @@ td.right, th.right { text-align: right; }
   Billionaire Alpaca Robot — Version 17
   <span id="conn-txt">disconnected</span>
 </h1>
+
+<!-- ═══ OWNED POSITIONS SUMMARY (top-of-dashboard overview) ═══ -->
+<div class="card full-row" id="ownedSummary" style="margin-bottom:10px;">
+  <div class="card-hd">
+    <h2>📊 Owned Positions Summary</h2>
+    <span class="tag" id="osMode" style="background:var(--bg4);color:var(--fg3)">—</span>
+  </div>
+  <div class="card-bd" style="padding:10px 12px;">
+
+    <!-- KPI strip -->
+    <div id="os-kpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+                             gap:10px;margin-bottom:12px;">
+      <div class="os-tile"><div class="os-lab">TOTAL EQUITY</div>
+        <div class="os-val" id="os-equity">—</div><div class="os-sub" id="os-equity-sub">—</div></div>
+      <div class="os-tile"><div class="os-lab">OPEN POSITIONS</div>
+        <div class="os-val" id="os-count">—</div><div class="os-sub" id="os-count-sub">—</div></div>
+      <div class="os-tile"><div class="os-lab">UNREALIZED P/L</div>
+        <div class="os-val" id="os-upl">—</div><div class="os-sub" id="os-upl-sub">—</div></div>
+      <div class="os-tile"><div class="os-lab">CASH AVAILABLE</div>
+        <div class="os-val" id="os-cash">—</div><div class="os-sub" id="os-cash-sub">—</div></div>
+      <div class="os-tile"><div class="os-lab">BEST / WORST</div>
+        <div class="os-val" id="os-best">—</div><div class="os-sub" id="os-worst">—</div></div>
+    </div>
+
+    <!-- chart + table -->
+    <div style="display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:12px;">
+      <div style="border:1px solid var(--border);border-radius:6px;background:var(--bg2);padding:6px 8px;min-width:0;">
+        <div style="display:flex;justify-content:space-between;align-items:center;
+                    gap:8px;margin-bottom:4px;font-size:11px;">
+          <span id="os-chart-title" style="font-weight:700;letter-spacing:.03em;">—</span>
+          <span id="os-chart-chips" style="display:flex;gap:6px;align-items:center;"></span>
+        </div>
+        <canvas id="os-chart" data-h="340" style="width:100%;height:340px;display:block;"></canvas>
+        <div id="os-chart-note" style="font-size:10px;color:var(--fg3);padding-top:4px;"></div>
+      </div>
+      <div style="border:1px solid var(--border);border-radius:6px;background:var(--bg2);
+                  padding:6px 8px;min-width:0;overflow:auto;max-height:300px;">
+        <table id="os-tbl" style="width:100%;font-size:11.5px;">
+          <thead><tr>
+            <th>Symbol</th>
+            <th class="right">Entry</th>
+            <th class="right">Live</th>
+            <th class="right">Stop</th>
+            <th class="right">P/L %</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+        <div id="os-tbl-empty" style="color:var(--fg3);text-align:center;
+             padding:14px 6px;font-size:11px;line-height:1.5;">
+          No positions owned — charting the top watchlist candidate.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
 <div class="grid narrow">
   <div class="card">
@@ -1318,6 +1380,7 @@ function render(s) {
   renderGovernor(s.governor);
   renderPositions(s.positions);
   renderPositionCharts(s.position_charts);
+  renderOwnedSummary(s);
   renderMonitoredSymbols(s.monitored_symbols);
   renderDaytradeScans(s.daytrade_scans);
   renderProfitMonitor(s.profit_monitor);
@@ -1777,7 +1840,7 @@ function _drawPositionChart(canvas, d) {
   const C = _ceColors();
   const ratio = window.devicePixelRatio || 1;
   const cssW = canvas.clientWidth || 420;
-  const cssH = 260;
+  const cssH = Number(canvas.dataset.h || 0) || 300;
   if (canvas.width !== Math.floor(cssW * ratio) ||
       canvas.height !== Math.floor(cssH * ratio)) {
     canvas.width = Math.floor(cssW * ratio);
@@ -1796,13 +1859,17 @@ function _drawPositionChart(canvas, d) {
     return;
   }
 
-  // Layout: price pane on top, MACD histogram pane below.
-  const padL = 6, padR = 52, padT = 8;
-  const priceH = 160, gap = 14, macdH = 56;
+  // Panes: price on top, MACD (lines + histogram) below. Header band at the
+  // very top carries the CE / RSI legend the way TradingView prints it.
+  const padL = 6, padR = 58, hdrH = 16, padT = hdrH + 6;
+  const macdH = Math.max(58, Math.round(cssH * 0.26));
+  const gap = 16;
+  const priceH = cssH - padT - gap - macdH - 14;
   const W = cssW - padL - padR;
   const n = bars.length;
   const bw = Math.max(1.2, W / n);
   const body = Math.max(1, Math.min(6, bw * 0.62));
+  const MACD_BLUE = '#2962ff', MACD_ORANGE = '#ff6d00';
 
   // Price scale spans candles AND the Chandelier line so the step line is
   // never clipped off the top or bottom of the pane.
@@ -1817,6 +1884,25 @@ function _drawPositionChart(canvas, d) {
   const yP = v => padT + priceH - ((v - lo) / (hi - lo)) * priceH;
   const xI = i => padL + i * bw + bw / 2;
 
+  // Header legend: CE params on the left, live RSI on the right.
+  ctx.font = '600 10px system-ui';
+  ctx.fillStyle = C.fg2;
+  ctx.fillText('CE 22 3', padL + 2, 11);
+  const rsiNow = (d.rsi != null) ? +d.rsi
+               : (Array.isArray(d.rsi_series)
+                  ? [...d.rsi_series].reverse().find(v => v != null) : null);
+  if (rsiNow != null) {
+    const rc = rsiNow >= 70 ? C.red : (rsiNow <= 30 ? C.green : C.fg2);
+    const label = 'RSI 14';
+    const val = rsiNow.toFixed(2);
+    ctx.fillStyle = C.fg3;
+    const lw = ctx.measureText(label).width;
+    const vw = ctx.measureText(val).width;
+    ctx.fillText(label, padL + W - lw - vw - 8, 11);
+    ctx.fillStyle = rc;
+    ctx.fillText(val, padL + W - vw, 11);
+  }
+
   // Gridlines + right-hand price axis
   ctx.strokeStyle = C.grid; ctx.fillStyle = C.fg3;
   ctx.font = '9px ui-monospace,monospace'; ctx.lineWidth = 1;
@@ -1827,6 +1913,51 @@ function _drawPositionChart(canvas, d) {
     ctx.globalAlpha = 1;
     ctx.fillText(v.toFixed(2), padL + W + 5, y + 3);
   }
+
+  // Session high / low dotted rails (the grey High/Low tags on TradingView).
+  let sHi = -Infinity, sLo = Infinity;
+  for (const b of bars) { if (b.h > sHi) sHi = b.h; if (b.l < sLo) sLo = b.l; }
+  ctx.save();
+  ctx.setLineDash([2, 5]); ctx.strokeStyle = C.fg3; ctx.globalAlpha = 0.65;
+  for (const v of [sHi, sLo]) {
+    const y = Math.round(yP(v)) + 0.5;
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + W, y); ctx.stroke();
+  }
+  ctx.restore();
+
+  const ce = d.ce || [];
+  const ceLen = Math.min(ce.length, n);
+
+  // Shaded band between price and the Chandelier stop — green while the stop
+  // is trailing below price (long), red while it is above (short). This is
+  // the filled region in the TradingView rendering.
+  let seg = [];
+  const flushBand = () => {
+    if (seg.length < 2) { seg = []; return; }
+    const long = seg[0].d === 1;
+    ctx.beginPath();
+    seg.forEach((p, k) => k ? ctx.lineTo(p.x, p.yc) : ctx.moveTo(p.x, p.yc));
+    for (let k = seg.length - 1; k >= 0; k--) ctx.lineTo(seg[k].x, seg[k].ys);
+    ctx.closePath();
+    ctx.fillStyle = long ? C.green : C.red;
+    ctx.globalAlpha = 0.13;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    seg = [];
+  };
+  for (let i = 0; i < ceLen; i++) {
+    const p = ce[i];
+    if (!p || p.v == null) { flushBand(); continue; }
+    if (seg.length && seg[0].d !== p.d) {
+      // Carry the flip bar into both segments so the fill has no gap.
+      const prev = seg[seg.length - 1];
+      seg.push({ x: xI(i), yc: yP(bars[i].c), ys: yP(p.v), d: seg[0].d });
+      flushBand();
+      seg.push({ x: prev.x, yc: prev.yc, ys: prev.ys, d: p.d });
+    }
+    seg.push({ x: xI(i), yc: yP(bars[i].c), ys: yP(p.v), d: p.d });
+  }
+  flushBand();
 
   // Candlesticks
   for (let i = 0; i < n; i++) {
@@ -1844,12 +1975,11 @@ function _drawPositionChart(canvas, d) {
 
   // Chandelier Exit step line — green while direction is long, red while
   // short, broken at the flip so the two colors never bleed together.
-  const ce = d.ce || [];
   let run = [];
   const flush = () => {
     if (!run.length) { return; }
     ctx.strokeStyle = run[0].d === 1 ? C.green : C.red;
-    ctx.lineWidth = 1.6; ctx.beginPath();
+    ctx.lineWidth = 1.8; ctx.lineJoin = 'round'; ctx.beginPath();
     if (run.length === 1) {
       // A direction that lasted a single bar still has to be visible --
       // without this, brief red flips vanish and the line reads as a
@@ -1861,7 +1991,7 @@ function _drawPositionChart(canvas, d) {
     }
     ctx.stroke(); run = [];
   };
-  for (let i = 0; i < Math.min(ce.length, n); i++) {
+  for (let i = 0; i < ceLen; i++) {
     const p = ce[i];
     if (!p || p.v == null) { flush(); continue; }
     if (run.length && run[0].d !== p.d) flush();
@@ -1869,33 +1999,60 @@ function _drawPositionChart(canvas, d) {
   }
   flush();
 
-  // Buy / Sell flip labels, exactly where everget's script prints them
-  for (const sg of (d.signals || [])) {
-    if (sg.i < 0 || sg.i >= n) continue;
+  // Buy / Sell flip labels. The flip bar is where the Chandelier turns, but
+  // the trade is taken at the extreme of the move it ends: a BUY anchors to
+  // the lowest low of the red dip that just finished, a SELL to the highest
+  // high of the green climax. Scan back over the prior run to find it.
+  const sigs = (d.signals || []).filter(sg => sg && sg.i >= 0 && sg.i < n);
+  for (const sg of sigs) {
     const buy = sg.type === 'BUY';
-    const x = xI(sg.i);
-    const y = buy ? yP(bars[sg.i].l) + 12 : yP(bars[sg.i].h) - 12;
+    const prevDir = buy ? -1 : 1;
+    let k = sg.i, ext = sg.i;
+    while (k > 0) {
+      const p = ce[k - 1];
+      if (!p || p.v == null || p.d !== prevDir) break;
+      k--;
+      if (buy ? bars[k].l < bars[ext].l : bars[k].h > bars[ext].h) ext = k;
+    }
+    const x = xI(ext);
+    const anchorY = buy ? yP(bars[ext].l) : yP(bars[ext].h);
+    const dotY = buy ? anchorY + 5 : anchorY - 5;
+
+    // Marker dot on the extreme bar.
     ctx.fillStyle = buy ? C.green : C.red;
-    ctx.beginPath(); ctx.arc(x, buy ? yP(bars[sg.i].l) + 4 : yP(bars[sg.i].h) - 4, 2.6, 0, 6.3);
-    ctx.fill();
-    ctx.font = '600 9px system-ui';
+    ctx.beginPath(); ctx.arc(x, dotY, 3, 0, 6.3); ctx.fill();
+
+    // Rounded pill label, clamped inside the pane so it is never clipped.
     const txt = buy ? 'Buy' : 'Sell';
-    const tw = ctx.measureText(txt).width + 6;
-    ctx.fillRect(x - tw / 2, y - 8, tw, 11);
-    ctx.fillStyle = '#0b0e14';
-    ctx.fillText(txt, x - tw / 2 + 3, y + 0.5);
+    ctx.font = '700 9.5px system-ui';
+    const tw = ctx.measureText(txt).width + 9, th = 13;
+    let lx = Math.max(padL, Math.min(padL + W - tw, x - tw / 2));
+    let ly = buy ? dotY + 5 : dotY - 5 - th;
+    ly = Math.max(padT, Math.min(padT + priceH - th, ly));
+    ctx.fillStyle = buy ? C.green : C.red;
+    if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(lx, ly, tw, th, 3); ctx.fill(); }
+    else ctx.fillRect(lx, ly, tw, th);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(txt, lx + 4.5, ly + 9.5);
   }
 
-  // MACD histogram pane
+  // ── MACD pane: histogram + MACD/signal lines ───────────────────────────
   const mTop = padT + priceH + gap;
   const hist = d.hist || [];
+  const mline = d.macd || [];
+  const sline = d.macd_signal || [];
   let mx = 0;
   for (const v of hist) if (v != null && Math.abs(v) > mx) mx = Math.abs(v);
+  for (const v of mline) if (v != null && Math.abs(v) > mx) mx = Math.abs(v);
+  for (const v of sline) if (v != null && Math.abs(v) > mx) mx = Math.abs(v);
   if (mx <= 0) mx = 1;
   const zero = mTop + macdH / 2;
+  const yM = v => zero - (v / mx) * (macdH / 2 - 3);
+
   ctx.strokeStyle = C.grid; ctx.globalAlpha = 0.5;
   ctx.beginPath(); ctx.moveTo(padL, zero + 0.5); ctx.lineTo(padL + W, zero + 0.5);
   ctx.stroke(); ctx.globalAlpha = 1;
+
   for (let i = 0; i < Math.min(hist.length, n); i++) {
     const v = hist[i];
     if (v == null) continue;
@@ -1904,18 +2061,162 @@ function _drawPositionChart(canvas, d) {
     // direction, faded when it is shrinking (the rollover you trade on).
     const growing = prev == null ? true : (v >= 0 ? v >= prev : v <= prev);
     ctx.fillStyle = v >= 0 ? C.green : C.red;
-    ctx.globalAlpha = growing ? 1 : 0.4;
-    const h = (Math.abs(v) / mx) * (macdH / 2 - 2);
+    ctx.globalAlpha = growing ? 1 : 0.35;
+    const h = Math.abs(zero - yM(v));
     ctx.fillRect(xI(i) - body / 2, v >= 0 ? zero - h : zero, body, Math.max(1, h));
   }
   ctx.globalAlpha = 1;
+
+  const drawLine = (arr, col) => {
+    ctx.strokeStyle = col; ctx.lineWidth = 1.3; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i < Math.min(arr.length, n); i++) {
+      const v = arr[i];
+      if (v == null) { started = false; continue; }
+      const x = xI(i), y = yM(v);
+      if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  };
+  drawLine(mline, MACD_BLUE);
+  drawLine(sline, MACD_ORANGE);
+
+  // Pane legend + right-hand value tags for hist / MACD / signal.
   ctx.fillStyle = C.fg3; ctx.font = '9px ui-monospace,monospace';
   ctx.fillText('MACD 12 26 9', padL + 2, mTop + 9);
-  const lastH = hist.length ? hist[hist.length - 1] : null;
-  if (lastH != null) {
-    ctx.fillStyle = lastH >= 0 ? C.green : C.red;
-    ctx.fillText(lastH.toFixed(4), padL + W + 5, zero + 3);
+  const lastOf = a => { for (let i = a.length - 1; i >= 0; i--) if (a[i] != null) return a[i]; return null; };
+  const lh = lastOf(hist), lm = lastOf(mline), ls = lastOf(sline);
+  const tags = [];
+  if (lh != null) tags.push([lh.toFixed(4), lh >= 0 ? C.green : C.red]);
+  if (lm != null) tags.push([lm.toFixed(4), MACD_BLUE]);
+  if (ls != null) tags.push([ls.toFixed(4), MACD_ORANGE]);
+  tags.forEach(([t, col], k) => {
+    ctx.fillStyle = col;
+    ctx.fillText(t, padL + W + 5, zero - 10 + k * 11);
+  });
+}
+
+// ── Owned Positions Summary (top-of-dashboard overview) ────────────────
+// Always renders a chart: the largest-move owned position when the book has
+// anything in it, otherwise the top candidate in the robot's current scanner
+// universe (payload flagged watch=true by get_position_charts()).
+function renderOwnedSummary(s) {
+  if (!s) return;
+  const a = (s.account && !s.account.error) ? s.account : {};
+  const pos = (Array.isArray(s.positions) ? s.positions : []).filter(p => p && !p.error);
+  const charts = (Array.isArray(s.position_charts) ? s.position_charts : [])
+                   .filter(c => c && c.symbol);
+  const watchMode = pos.length === 0;
+
+  const setT = (id, txt, cls) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = txt;
+    if (cls !== undefined) el.className = el.className.replace(/\b(green|red)\b/g, '').trim()
+                                          + (cls ? ' ' + cls : '');
+  };
+
+  // KPI strip
+  setT('os-equity', fmt.usd(a.equity));
+  setT('os-equity-sub', 'exposure ' + fmt.usd(a.exposure));
+  setT('os-count', String(pos.length));
+  setT('os-count-sub', watchMode ? 'flat — scanning' : 'charts: ' + charts.length);
+
+  // gain_pct on positions is a fraction; average it as an equal-weight proxy
+  // since the positions payload carries no qty.
+  let avg = null, best = null, worst = null;
+  if (pos.length) {
+    const g = pos.map(p => +p.gain_pct || 0);
+    avg = g.reduce((x, y) => x + y, 0) / g.length;
+    const sorted = pos.slice().sort((x, y) => (+y.gain_pct || 0) - (+x.gain_pct || 0));
+    best = sorted[0]; worst = sorted[sorted.length - 1];
   }
+  setT('os-upl', avg == null ? '—' : pnlSign(avg), avg == null ? '' : pnlClass(avg));
+  setT('os-upl-sub', avg == null ? 'no open risk' : 'equal-weight avg of open book');
+  setT('os-cash', fmt.usd(a.cash));
+  setT('os-cash-sub', 'buying power ' + fmt.usd(a.buying_power));
+  setT('os-best', best ? best.symbol + ' ' + pnlSign(+best.gain_pct || 0) : '—',
+       best ? pnlClass(+best.gain_pct || 0) : '');
+  setT('os-worst', worst ? worst.symbol + ' ' + pnlSign(+worst.gain_pct || 0) : 'nothing held');
+
+  const mode = document.getElementById('osMode');
+  if (mode) {
+    mode.textContent = watchMode ? 'WATCHING TO BUY' : pos.length + ' OPEN';
+    mode.className = 'tag ' + (watchMode ? 'tag-blue' : 'tag-green');
+  }
+
+  // Table
+  const tbody = document.querySelector('#os-tbl tbody');
+  const empty = document.getElementById('os-tbl-empty');
+  if (tbody && empty) {
+    if (!pos.length) {
+      tbody.innerHTML = '';
+      empty.style.display = 'block';
+    } else {
+      empty.style.display = 'none';
+      tbody.innerHTML = pos.slice()
+        .sort((x, y) => (+y.gain_pct || 0) - (+x.gain_pct || 0))
+        .map(p => `<tr>
+          <td><b>${p.symbol || '?'}</b></td>
+          <td class="right">${fmt.usd(p.avg_price)}</td>
+          <td class="right">${fmt.usd(p.current_price)}</td>
+          <td class="right">${p.chandelier_stop != null ? fmt.usd(p.chandelier_stop) : '—'}</td>
+          <td class="right ${pnlClass(+p.gain_pct || 0)}">${pnlSign(+p.gain_pct || 0)}</td>
+        </tr>`).join('');
+    }
+  }
+
+  // Headline chart — owned leader, else the watched candidate.
+  let pick = null;
+  if (!watchMode && pos.length) {
+    const order = pos.slice().sort((x, y) =>
+      Math.abs(+y.gain_pct || 0) - Math.abs(+x.gain_pct || 0));
+    for (const p of order) {
+      const c = charts.find(ch => ch.symbol === p.symbol);
+      if (c) { pick = c; break; }
+    }
+  }
+  if (!pick) pick = charts.find(c => c.watch) || charts[0] || null;
+
+  const title = document.getElementById('os-chart-title');
+  const chips = document.getElementById('os-chart-chips');
+  const note  = document.getElementById('os-chart-note');
+  const cv    = document.getElementById('os-chart');
+  if (!cv) return;
+
+  if (!pick) {
+    if (title) title.textContent = 'No chart data';
+    if (chips) chips.innerHTML = '';
+    if (note)  note.textContent = 'Scanner has not produced a universe yet.';
+    const ctx = cv.getContext('2d');
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    return;
+  }
+
+  const isWatch = !!pick.watch;
+  if (title) {
+    title.innerHTML = (isWatch ? '👁 WATCHING TO BUY — ' : '📈 ') +
+                      `<span style="font-size:13px">${pick.symbol}</span>`;
+  }
+  if (note) {
+    note.textContent = isWatch
+      ? 'Top candidate in the current scanner universe — not owned. '
+        + '1m candles · Chandelier Exit (22,3) · MACD(12,26,9) · RSI(14)'
+      : '1m candles · Chandelier Exit (22,3) · MACD(12,26,9) · RSI(14)';
+  }
+  if (chips) {
+    const rsi = (pick.rsi == null) ? '—' : (+pick.rsi).toFixed(1);
+    const rsiCls = pick.rsi == null ? '' :
+      (pick.rsi >= 70 ? 'tag-green' : (pick.rsi <= 30 ? 'tag-red' : 'tag-blue'));
+    chips.innerHTML =
+      (isWatch
+        ? '<span class="tag tag-blue">CANDIDATE</span>'
+        : `<span class="tag ${pick.direction === 1 ? 'tag-green' : 'tag-red'}">CE ${pick.direction === 1 ? 'LONG' : 'SHORT'}</span>`) +
+      `<span class="tag ${rsiCls}">RSI ${rsi}</span>` +
+      `<span class="tag" style="font-family:var(--mono)">${pick.last_price != null ? (+pick.last_price).toFixed(2) : '—'}</span>`;
+  }
+  try { _drawPositionChart(cv, pick); } catch (e) {}
 }
 
 function renderPositionCharts(charts) {
@@ -1944,7 +2245,7 @@ function renderPositionCharts(charts) {
           <span style="font-weight:700;letter-spacing:.03em;">${c.symbol}</span>
           <span id="chip-${c.symbol}" style="display:flex;gap:6px;align-items:center;"></span>
         </div>
-        <canvas id="cv-${c.symbol}" style="width:100%;height:260px;display:block;"></canvas>
+        <canvas id="cv-${c.symbol}" data-h="300" style="width:100%;height:300px;display:block;"></canvas>
       </div>`).join('');
   }
   for (const c of list) {
@@ -1953,13 +2254,16 @@ function renderPositionCharts(charts) {
     const chip = document.getElementById('chip-' + c.symbol);
     if (!chip) continue;
     const dirLong = c.direction === 1;
+    const isWatch = !!c.watch;
     const rsi = (c.rsi == null) ? '—' : (+c.rsi).toFixed(1);
     // RSI coloring matches how the operator reads it: >=70 extended (the
     // runner condition), <=30 oversold, otherwise neutral.
     const rsiCls = c.rsi == null ? '' :
       (c.rsi >= 70 ? 'tag-green' : (c.rsi <= 30 ? 'tag-red' : 'tag-blue'));
     chip.innerHTML =
-      `<span class="tag ${dirLong ? 'tag-green' : 'tag-red'}">CE ${dirLong ? 'LONG' : 'SHORT'}</span>` +
+      (isWatch
+        ? `<span class="tag tag-blue">WATCHING TO BUY</span>`
+        : `<span class="tag ${dirLong ? 'tag-green' : 'tag-red'}">CE ${dirLong ? 'LONG' : 'SHORT'}</span>`) +
       `<span class="tag ${rsiCls}">RSI ${rsi}</span>` +
       `<span class="tag" style="font-family:var(--mono)">${c.last_price != null ? (+c.last_price).toFixed(2) : '—'}</span>`;
   }

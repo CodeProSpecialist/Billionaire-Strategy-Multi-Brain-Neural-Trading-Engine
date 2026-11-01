@@ -11734,6 +11734,8 @@ def _fetch_ce_chart_series(symbol):
                                     signalperiod=CE_MACD_SIGNAL)
     except Exception:
         hist = np.full(c.size, np.nan)
+        _ln = np.full(c.size, np.nan)
+        _sg = np.full(c.size, np.nan)
     try:
         rsi_arr = talib.RSI(c, timeperiod=14)
         if np.isfinite(rsi_arr[-1]):
@@ -11751,8 +11753,26 @@ def _fetch_ce_chart_series(symbol):
         except Exception:
             return ''
 
+    # Full RSI series so the chart can plot the line, not just the last read.
+    try:
+        rsi_series = rsi_arr
+    except Exception:
+        rsi_series = np.full(c.size, np.nan)
+
+    def _f(arr, i):
+        """Finite float at index i, else None (JSON-safe)."""
+        try:
+            v = arr[i]
+            return round(float(v), 6) if np.isfinite(v) else None
+        except Exception:
+            return None
+
     bars, ce_line, hist_out, signals = [], [], [], []
+    macd_out, sig_out, rsi_out = [], [], []
     for i in range(s0, n):
+        macd_out.append(_f(_ln, i))
+        sig_out.append(_f(_sg, i))
+        rsi_out.append(_f(rsi_series, i))
         bars.append({'t': _t(i), 'o': round(float(o[i]), 4),
                      'h': round(float(h[i]), 4), 'l': round(float(l[i]), 4),
                      'c': round(float(c[i]), 4)})
@@ -11776,6 +11796,9 @@ def _fetch_ce_chart_series(symbol):
     out['bars'] = bars
     out['ce'] = ce_line
     out['hist'] = hist_out
+    out['macd'] = macd_out
+    out['macd_signal'] = sig_out
+    out['rsi_series'] = rsi_out
     out['signals'] = signals
     if direction is not None:
         out['direction'] = int(direction[-1])
@@ -11832,6 +11855,27 @@ def get_position_charts(max_positions=8):
             charts.append({'symbol': sym, 'ok': False, 'error': str(e),
                            'bars': [], 'ce': [], 'hist': [], 'signals': [],
                            'rsi': None})
+
+    # Nothing owned: the dashboard should still show a live chart, so fall
+    # back to the top candidate in the current scanner universe -- the symbol
+    # the robot is watching to buy next. Flagged with watch=True so the UI can
+    # label it instead of presenting it as a held position.
+    if not charts:
+        try:
+            watch_syms = get_symbols_to_buy() or []
+        except Exception as e:
+            logging.debug(f"[charts] watch fallback universe fetch failed: {e}")
+            watch_syms = []
+        if watch_syms:
+            wsym = watch_syms[0]
+            try:
+                wchart = get_ce_chart_series(wsym)
+            except Exception as e:
+                wchart = {'symbol': wsym, 'ok': False, 'error': str(e),
+                          'bars': [], 'ce': [], 'hist': [], 'signals': [],
+                          'rsi': None}
+            wchart['watch'] = True
+            charts.append(wchart)
     return charts
 
 
