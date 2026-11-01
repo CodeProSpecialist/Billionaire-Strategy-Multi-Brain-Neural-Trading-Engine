@@ -11008,6 +11008,36 @@ CE_SELL_MIN_GAIN      = 0.0       # only take the signal exit at >= breakeven
 CE_SELL_AT_A_LOSS     = False     # True lets the signal exit cut losers too
 CE_SCORE_BUMP         = 0.75      # buy-score bump on a fresh confluent signal
 
+# --- Bullish-momentum entry requirement -------------------------------------
+# Operator rule: do not buy unless the symbol has BOTH current (near-term)
+# bullish momentum AND bullish momentum over the past 20 days. Both legs must
+# pass -- this is an AND, not a score bump.
+#
+#   NEAR-TERM leg  (1-minute bars, reuses the cached CE/MACD fetch -- no extra
+#                   HTTP): price must be up over the last MOM_SHORT_BARS
+#                   minutes, above its own 1m SMA, and the MACD histogram must
+#                   be rising bar-over-bar.
+#   20-DAY leg     (daily bars, reuses the `df` already loaded by the buy
+#                   loop): 20-day return positive, close above SMA20, and
+#                   SMA20 itself rising over the last 5 sessions.
+#
+# NOTE this pulls in the OPPOSITE direction from dip-buying in sideways or
+# bearish tape -- a stock that has sold off for 20 days can no longer be
+# bought here no matter how good the 1m dip looks. That is the rule as
+# specified; set MOMENTUM_GATE_MODE='shadow' to see what it would block
+# before it blocks it.
+MOMENTUM_GATE_MODE       = 'armed'  # 'armed' | 'shadow' | 'off'
+MOM_SHORT_BARS           = 15       # 1m bars for the near-term return
+MOM_SHORT_MIN_RETURN     = 0.0      # near-term return must exceed this
+MOM_SHORT_SMA_BARS       = 20       # 1m SMA the price must sit above
+MOM_SHORT_REQUIRE_SMA    = True
+MOM_SHORT_REQUIRE_HIST_UP= True     # MACD histogram rising bar-over-bar
+MOM_20D_BARS             = 20       # trading sessions for the long leg
+MOM_20D_MIN_RETURN       = 0.0      # 20-day return must exceed this
+MOM_20D_REQUIRE_SMA20    = True     # close above its 20-day SMA
+MOM_20D_REQUIRE_SMA_RISE = True     # 20-day SMA rising over the last 5 bars
+MOM_20D_SMA_SLOPE_BARS   = 5
+
 
 def _chandelier_exit_everget(high, low, close):
     """Faithful port of everget's TradingView "Chandelier Exit" Pine script.
@@ -11207,6 +11237,27 @@ def _fetch_ce_macd_signal(symbol):
         if mode == 'or':   return a or b
         return a and b                      # default 'and'
 
+    # ---- near-term momentum, from the SAME 1m series (no extra fetch) ----
+    mom = {'ret': None, 'above_sma': None, 'hist_rising': None, 'ok': False}
+    try:
+        k = int(MOM_SHORT_BARS)
+        if close.size > k and close[-1 - k] > 0:
+            mom['ret'] = float(close[-1] / close[-1 - k] - 1.0)
+        sb = int(MOM_SHORT_SMA_BARS)
+        if close.size >= sb:
+            sma = float(np.mean(close[-sb:]))
+            mom['above_sma'] = bool(close[-1] > sma)
+            mom['sma'] = round(sma, 4)
+        try:
+            if (np.isfinite(hist[-1]) and np.isfinite(hist[-2])):
+                mom['hist_rising'] = bool(hist[-1] > hist[-2])
+        except Exception:
+            pass
+        mom['ok'] = mom['ret'] is not None
+    except Exception:
+        pass
+    out['momentum_short'] = mom
+
     out['ok'] = True
     out['ce_buy'], out['ce_sell'] = ce_buy, ce_sell
     out['macd_buy'], out['macd_sell'] = macd_buy, macd_sell
@@ -11290,6 +11341,78 @@ def ce_macd_buy_bump(symbol):
         return bump, f"{tag}_buy={bump:+.2f}"
     except Exception:
         return 0.0, ''
+
+
+def check_bullish_momentum_gate(symbol, df=None):
+    """(allow, reason) -- requires BOTH near-term and 20-day bullish momentum.
+
+    `df` is the daily-bar frame the buy loop already holds; passing it avoids
+    a second fetch. The near-term leg reads the cached 1m CE/MACD payload, so
+    this gate costs no additional HTTP on either side.
+
+    Fail-OPEN on missing data (a yfinance gap must not silently halt all
+    trading); fail-CLOSED only on a clean read that shows momentum is absent.
+    """
+    if MOMENTUM_GATE_MODE == 'off':
+        return True, 'momentum gate disabled'
+    fails, notes = [], []
+
+    # ---------------- near-term leg (1-minute bars) ----------------
+    try:
+        r = get_ce_macd_signal(symbol)
+        m = (r or {}).get('momentum_short') or {}
+        if not (r or {}).get('ok') or not m.get('ok'):
+            notes.append('near-term: no 1m data (fail-open)')
+        else:
+            ret = m.get('ret')
+            if ret is None or ret <= float(MOM_SHORT_MIN_RETURN):
+                fails.append(f"near-term {MOM_SHORT_BARS}m return "
+                             f"{(ret or 0.0)*100:+.2f}% <= "
+                             f"{MOM_SHORT_MIN_RETURN*100:+.2f}%")
+            else:
+                notes.append(f"{MOM_SHORT_BARS}m {ret*100:+.2f}%")
+            if MOM_SHORT_REQUIRE_SMA and m.get('above_sma') is False:
+                fails.append(f"price below its {MOM_SHORT_SMA_BARS}-bar 1m SMA")
+            if MOM_SHORT_REQUIRE_HIST_UP and m.get('hist_rising') is False:
+                fails.append('MACD histogram not rising bar-over-bar')
+    except Exception as e:
+        notes.append(f'near-term error (fail-open): {e}')
+
+    # ---------------- 20-day leg (daily bars) ----------------
+    try:
+        if df is None or getattr(df, 'empty', True):
+            notes.append('20d: no daily data (fail-open)')
+        else:
+            c = df['Close'].astype(float).to_numpy().flatten()
+            c = c[np.isfinite(c)]
+            nb = int(MOM_20D_BARS)
+            if c.size < nb + int(MOM_20D_SMA_SLOPE_BARS) + 1:
+                notes.append(f'20d: only {c.size} daily bars (fail-open)')
+            else:
+                ret20 = float(c[-1] / c[-1 - nb] - 1.0) if c[-1 - nb] > 0 else None
+                if ret20 is None or ret20 <= float(MOM_20D_MIN_RETURN):
+                    fails.append(f"20-day return {(ret20 or 0.0)*100:+.2f}% <= "
+                                 f"{MOM_20D_MIN_RETURN*100:+.2f}%")
+                else:
+                    notes.append(f"20d {ret20*100:+.2f}%")
+                sma20 = float(np.mean(c[-nb:]))
+                if MOM_20D_REQUIRE_SMA20 and not (c[-1] > sma20):
+                    fails.append(f"close ${c[-1]:.2f} below SMA20 ${sma20:.2f}")
+                if MOM_20D_REQUIRE_SMA_RISE:
+                    sb = int(MOM_20D_SMA_SLOPE_BARS)
+                    sma_prev = float(np.mean(c[-nb - sb:-sb]))
+                    if not (sma20 > sma_prev):
+                        fails.append(f"SMA20 flat/falling over {sb} sessions "
+                                     f"(${sma_prev:.2f} -> ${sma20:.2f})")
+    except Exception as e:
+        notes.append(f'20d error (fail-open): {e}')
+
+    if not fails:
+        return True, 'bullish momentum: ' + (', '.join(notes) if notes else 'ok')
+    reason = '; '.join(fails)
+    if MOMENTUM_GATE_MODE == 'shadow':
+        return True, f'[SHADOW would-deny] {reason}'
+    return False, reason
 
 
 def ce_macd_sell_check(symbol, gain_now):
@@ -17429,6 +17552,19 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
                 continue
             elif ce_reason.startswith('[SHADOW would-deny]'):
                 print(f"  [ce/macd SHADOW] {yf_symbol}: {ce_reason} (would-block, letting through)")
+            # ---------------- Bullish-momentum requirement ------------------
+            # Operator rule: no entry without BOTH current bullish momentum
+            # and bullish momentum over the past 20 days. Reuses the cached
+            # 1m payload and the daily `df` already in hand -- no extra HTTP.
+            mom_allow, mom_reason = check_bullish_momentum_gate(yf_symbol, df)
+            if not mom_allow:
+                print(f"{yf_symbol}: {DIM}momentum gate:{RESET} {mom_reason}. Skipping.")
+                logging.info(f"{now_str} Skipped {yf_symbol}: momentum gate — {mom_reason}")
+                update_previous_price(symbol, current_price)
+                continue
+            elif mom_reason.startswith('[SHADOW would-deny]'):
+                print(f"  [momentum SHADOW] {yf_symbol}: {mom_reason} (would-block, letting through)")
+
             ce_bump, ce_bump_reason = ce_macd_buy_bump(yf_symbol)
             if ce_bump:
                 sig['score'] += ce_bump
