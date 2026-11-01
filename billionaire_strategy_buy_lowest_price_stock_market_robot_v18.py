@@ -10344,9 +10344,28 @@ MOO_SWEEP_MIN_PROFIT_PCT = 0.0  # "any profit" -- must be strictly above this
 USE_CLOSE_PROFIT_SWEEP = True
 CLOSE_SWEEP_HOUR = 15
 CLOSE_SWEEP_MINUTE = 45   # 3:45pm ET -- 15 minutes before the 4:00pm close
-# DAY-TRADE MODE: the 3:45pm sweep sells EVERY position (winners and losers),
-# so nothing is held overnight. False = old behavior (profitable ones only).
-CLOSE_SWEEP_SELL_ALL = True
+# SWING MODE (2026-11-01, operator instruction). The 3:45pm sweep now sells
+# every position that is GREEN BY ANY AMOUNT -- MOO_SWEEP_MIN_PROFIT_PCT is
+# 0.0 and the test is strictly-greater, so a single penny of profit closes
+# the trade. Positions still underwater at 3:45pm are CARRIED, up to
+# MAX_HOLD_SESSIONS trading days.
+#
+# MEASURED CONSEQUENCE, full year, 54 NASDAQ tech names, 60m bars -- read
+# this before changing it back and forth:
+#       always hold to signal : 66.4% win, +0.172%/trade, +96.0%, max DD -37.0%
+#   >>  this setting          : 73.2% win, +0.049%/trade, +27.2%, max DD -41.6%
+#       flat by the bell      : 50.1% win, -0.070%/trade, -39.8%, max DD -49.1%
+# Selling every winner before the bell and carrying only losers RAISES the
+# win rate to 73.2% while cutting total return by two thirds and making the
+# drawdown WORSE: all of the overnight gap risk is kept and all of the
+# overnight gap upside is given away. Payoff ratio falls 0.58 -> 0.38.
+# Set CLOSE_SWEEP_SELL_ALL=True for the old flat-by-the-bell day-trade mode.
+CLOSE_SWEEP_SELL_ALL = False
+
+# Maximum trading sessions a carried position may stay open. Enforced in
+# sell_stocks; 2 matches the backtested "hold up to 2 days" horizon.
+MAX_HOLD_SESSIONS = 2
+MAX_HOLD_ENFORCE = True
 # No new entries at/after this time (ET), so nothing is bought after the
 # 3:45pm flatten and then carried overnight.
 NO_NEW_BUYS_AFTER = (15, 30)
@@ -19764,6 +19783,42 @@ def _sell_stocks_body(lock):
                 print(f"{symbol}: chandelier_daily_sell pending "
                       f"(confirm={ch_sell.get('confirm_score', 0)}/3, "
                       f"bars_since_sell={ch_sell.get('bars_since_sell')}).")
+
+            # ---------------- Maximum hold horizon (swing mode) -------------
+            # Positions carried past the 3:45pm sweep (i.e. still underwater)
+            # are closed unconditionally after MAX_HOLD_SESSIONS trading days,
+            # so a loser cannot sit indefinitely. Counts NYSE sessions, not
+            # calendar days, so a weekend or holiday does not burn the clock.
+            if MAX_HOLD_ENFORCE and qty and qty > 0 and purchase_date:
+                try:
+                    _pd = str(purchase_date)[:10]
+                    _held_sessions = None
+                    try:
+                        _cal = mcal.get_calendar('NYSE')
+                        _vd = _cal.valid_days(start_date=_pd,
+                                              end_date=datetime.now(eastern).date().isoformat())
+                        _held_sessions = max(0, len(_vd) - 1)
+                    except Exception:
+                        _d0 = datetime.strptime(_pd, '%Y-%m-%d').date()
+                        _held_sessions = (datetime.now(eastern).date() - _d0).days
+                    if _held_sessions is not None and _held_sessions >= MAX_HOLD_SESSIONS:
+                        print(f"{symbol}: {DIM}MAX HOLD{RESET} — {_held_sessions} session(s) "
+                              f"held >= {MAX_HOLD_SESSIONS} (entry ${bought_price:.2f}, "
+                              f"current ${current_price:.2f}, {gain_now*100:+.2f}%). Closing.")
+                        logging.info(f"{now_str} MAX HOLD exit for {symbol}: "
+                                     f"{_held_sessions} sessions, {gain_now*100:+.2f}%")
+                        _cancel_existing_sell_orders(symbol, "MAX HOLD", now_str)
+                        filled_qty, notional, steps = _sell_with_escalation(
+                            symbol, qty, current_price, 'market', 'day',
+                            "MAX HOLD", now_str)
+                        if filled_qty > 0:
+                            to_remove.append((symbol, filled_qty, notional / filled_qty))
+                        else:
+                            print(f"{symbol}: {RED}max-hold escalation produced no fill"
+                                  f"{RESET} -- will retry next cycle.")
+                        continue
+                except Exception as _mh:
+                    logging.debug(f"{symbol}: max-hold check skipped ({_mh})")
 
             # ---------------- CE + MACD 1-minute exit signal ----------------
             # Operator rule from the chart: exit on the Chandelier Exit
