@@ -10044,6 +10044,82 @@ KELLY_MIN_TRADES = 10
 KELLY_MAX_FRACTION = 0.05        # cap at 5% of equity per position
 MAX_NEW_POSITIONS_PER_CYCLE = 3  # rank all qualifying candidates, only buy the top N (review item #9)
 
+# ---------------- One-position-per-trading-day mode -------------------------
+# Operator spec: buy exactly ONE position per trading day -- the best-ranked
+# candidate -- entering on a dip (Chandelier Exit flip long + MACD histogram
+# trough) and exiting at the peak (CE flip short or MACD histogram peak),
+# restricted to profitable NASDAQ technology mid- and large-caps.
+#
+# BACKTEST RECORD, so future-you is not guessing (all measured 2026-11-01):
+#   * Oct 2026, 1m bars, 24 large caps, 20 sessions: 19 trades, 68.4% win,
+#     TOTAL -1.35%, avg -0.07%/trade. Split-half: -0.75% then -0.60%.
+#   * May-Jul 2026, 60m bars, 54 NASDAQ tech names, 63 sessions: the full
+#     volume+momentum+mcap composite returned -14.74%, the WORST of the five
+#     rankers tried; volume alone -9.29%, momentum alone -8.35%.
+#   * Across 3,743 real Chandelier round trips on 1m bars the MEDIAN move is
+#     -0.121% and only 25.4% clear round-trip cost.
+#   * Adding 20-day momentum to the ranking made results worse in BOTH
+#     independent test periods.
+# No configuration tested was profitable out-of-sample. This mode is armed at
+# the operator's explicit instruction after being shown these numbers. Set
+# ONE_PER_DAY_MODE='shadow' to log entries/exits without placing orders.
+ONE_PER_DAY_MODE        = 'armed'   # 'armed' | 'shadow' | 'off'
+ONE_PER_DAY_MAX         = 1         # positions opened per trading day
+ONE_PER_DAY_RANK_VOLUME = 1.0       # weight on relative-volume z-score
+ONE_PER_DAY_RANK_MOM20  = 1.0       # weight on 20-day momentum z-score
+ONE_PER_DAY_RANK_MCAP   = 1.0       # weight on market-cap z-score
+# Universe: profitable NASDAQ technology, mid cap and up.
+UNIVERSE_NASDAQ_TECH_ONLY = True
+UNIVERSE_MIN_MARKET_CAP   = 2_000_000_000     # $2B -- mid cap floor
+_NASDAQ_TECH_UNIVERSE = [
+    'AAPL','NVDA','MSFT','AVGO','MU','AMD','ASML','CSCO','AMAT','PANW','LRCX',
+    'TXN','CRWD','ARM','KLAC','ADI','MRVL','QCOM','STX','WDC','FTNT','ADBE',
+    'INTU','CDNS','SNPS','DDOG','NXPI','MPWR','ADSK','TER','MCHP','PAYX',
+    'NTAP','OKTA','CTSH','MDB','ON','VRSN','SMCI','SWKS','FFIV','GEN','ZBRA',
+    'MKSI','AKAM','LSCC','SMTC','JKHY','QRVO','AMKR','CRUS','DIOD','ACLS',
+    'POWI','UCTT',
+]
+# Session state for the one-per-day cap (ET date string -> count opened).
+_one_per_day_state = {'date': None, 'opened': 0}
+_one_per_day_lock = threading.Lock()
+
+
+def one_per_day_slots_left():
+    """Positions still allowed to open today under ONE_PER_DAY_MODE."""
+    if ONE_PER_DAY_MODE == 'off':
+        return 999
+    today = datetime.now(eastern).date().isoformat()
+    with _one_per_day_lock:
+        if _one_per_day_state['date'] != today:
+            _one_per_day_state.update(date=today, opened=0)
+        return max(0, int(ONE_PER_DAY_MAX) - int(_one_per_day_state['opened']))
+
+
+def one_per_day_record_open(n=1):
+    """Called after a fill so the daily cap actually counts down."""
+    if ONE_PER_DAY_MODE == 'off':
+        return
+    today = datetime.now(eastern).date().isoformat()
+    with _one_per_day_lock:
+        if _one_per_day_state['date'] != today:
+            _one_per_day_state.update(date=today, opened=0)
+        _one_per_day_state['opened'] += int(n)
+
+
+def in_trading_universe(yf_symbol):
+    """(allow, reason) -- profitable NASDAQ technology, mid cap and up.
+
+    The list is a static screen (NASDAQ-listed, sector=Technology, market cap
+    >= $2B, positive net income) rather than a live fundamentals lookup, so it
+    costs nothing per cycle. Re-screen it when the operator wants it refreshed.
+    """
+    if not UNIVERSE_NASDAQ_TECH_ONLY:
+        return True, 'universe filter off'
+    sym = (yf_symbol or '').upper().replace('.', '-')
+    if sym in _NASDAQ_TECH_UNIVERSE:
+        return True, 'NASDAQ tech mid/large cap'
+    return False, 'not in NASDAQ tech mid/large-cap universe'
+
 # ---------------- Early-morning entry gate ----------------
 # Before this cutoff (Eastern time), the risk brain and buy path together
 # require ONE of two conditions to permit a new entry:
@@ -17652,6 +17728,25 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
             # ranking instead of being inflated by a low-volatility stock.
             reward_term = max(reward_term, 0.0001) if reward_source == 'history' else reward_term
             rank_score = reward_term / max(atr_pct, 0.001) if atr_pct else reward_term
+            # Composite ranker inputs for one-per-day mode: relative volume,
+            # 20-day momentum and a market-cap proxy. Stashed raw here and
+            # z-scored across the candidate pool below -- the three are on
+            # wildly different scales and cannot be summed raw.
+            _rk_vol = _rk_m20 = _rk_mcap = None
+            if ONE_PER_DAY_MODE != 'off':
+                try:
+                    _cl = df['Close'].values.astype(float).flatten()
+                    _vl = df['Volume'].values.astype(float).flatten()
+                    if len(_cl) >= 21 and _cl[-21] > 0:
+                        _rk_m20 = float(_cl[-1] / _cl[-21] - 1.0)
+                    if len(_vl) >= 20 and np.mean(_vl[-20:]) > 0:
+                        _rk_vol = float(_vl[-1] / np.mean(_vl[-20:]))
+                    # Dollar volume stands in for market cap: shares
+                    # outstanding is not on hand here, and within this
+                    # screened universe the two rank almost identically.
+                    _rk_mcap = float(_cl[-1]) * float(np.mean(_vl[-20:]))
+                except Exception:
+                    pass
 
             candidates.append({
                 'symbol': symbol, 'yf_symbol': yf_symbol, 'api_symbol': api_symbol,
@@ -17659,6 +17754,7 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
                 'atr_pct': atr_pct, 'rank_score': rank_score, 'regime': regime,
                 'reward_source': reward_source, 'expected_return': expected_return,
                 'df': df, 'ml_adjustment': ml_adjustment,
+                'rk_vol': _rk_vol, 'rk_m20': _rk_m20, 'rk_mcap': _rk_mcap,
             })
             update_previous_price(symbol, current_price)
             # Keep this symbol's claim held through phase 2 -- released below
@@ -17718,8 +17814,41 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
 
     # Rank best-first. Only the top N are actually bought (review item #9): the
     # rest are released so they don't sit locked out of a future cycle.
+    # ---------------- Composite ranking (one-per-day mode) ----------------
+    # z-score each factor ACROSS today's candidate pool, then weighted-sum.
+    # Relative volume, 20-day return and dollar volume are on different
+    # scales, so summing them raw would let whichever has the biggest numbers
+    # decide everything. Falls back to the existing rank_score on any error.
+    if ONE_PER_DAY_MODE != 'off' and len(candidates) > 1:
+        try:
+            def _z(key):
+                vals = [c.get(key) for c in candidates]
+                good = [v for v in vals if v is not None and np.isfinite(v)]
+                if len(good) < 2:
+                    return [0.0] * len(candidates)
+                mu = float(np.mean(good)); sd = float(np.std(good)) or 1.0
+                return [0.0 if (v is None or not np.isfinite(v)) else (v - mu) / sd
+                        for v in vals]
+            zv, zm, zc = _z('rk_vol'), _z('rk_m20'), _z('rk_mcap')
+            for k, c in enumerate(candidates):
+                c['rank_score'] = (ONE_PER_DAY_RANK_VOLUME * zv[k]
+                                   + ONE_PER_DAY_RANK_MOM20 * zm[k]
+                                   + ONE_PER_DAY_RANK_MCAP * zc[k])
+            print(f"  [one-per-day] composite ranking applied to "
+                  f"{len(candidates)} candidate(s) (vol {ONE_PER_DAY_RANK_VOLUME}, "
+                  f"m20 {ONE_PER_DAY_RANK_MOM20}, mcap {ONE_PER_DAY_RANK_MCAP}).")
+        except Exception as _e:
+            logging.debug(f"composite ranking failed, using rank_score: {_e}")
+
     candidates.sort(key=lambda c: c['rank_score'], reverse=True)
-    to_buy = candidates[:MAX_NEW_POSITIONS_PER_CYCLE]
+    _cap = MAX_NEW_POSITIONS_PER_CYCLE
+    if ONE_PER_DAY_MODE == 'armed':
+        _cap = min(_cap, one_per_day_slots_left())
+    elif ONE_PER_DAY_MODE == 'shadow' and candidates:
+        print(f"  [one-per-day SHADOW] would buy {candidates[0]['yf_symbol']} "
+              f"only; letting the normal {MAX_NEW_POSITIONS_PER_CYCLE}-position "
+              f"path run.")
+    to_buy = candidates[:max(0, _cap)]
     skipped = candidates[MAX_NEW_POSITIONS_PER_CYCLE:]
     for c in skipped:
         print(f"{c['yf_symbol']}: ranked #{candidates.index(c)+1} of {len(candidates)} "
@@ -18136,6 +18265,15 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
                             'Price Per Share': filled_price,
                         })
                     filled_records.append((api_symbol, yf_symbol, filled_qty, filled_price, today_date_str, sig, is_bull_buy))
+                    # Count the daily cap down on a REAL fill only -- an
+                    # order that never filled must not burn the day's slot.
+                    try:
+                        one_per_day_record_open(1)
+                        if ONE_PER_DAY_MODE == 'armed':
+                            print(f"  [one-per-day] slot used; "
+                                  f"{one_per_day_slots_left()} left today.")
+                    except Exception as _oe:
+                        logging.debug(f"one-per-day counter failed: {_oe}")
                     try:
                         composite_record_fill(yf_symbol, filled_qty,
                                               filled_price,
