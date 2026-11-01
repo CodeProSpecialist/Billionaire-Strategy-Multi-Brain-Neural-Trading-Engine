@@ -11017,26 +11017,18 @@ CE_SCORE_BUMP         = 0.75      # buy-score bump on a fresh confluent signal
 #                   HTTP): price must be up over the last MOM_SHORT_BARS
 #                   minutes, above its own 1m SMA, and the MACD histogram must
 #                   be rising bar-over-bar.
-#   20-DAY leg     (daily bars, reuses the `df` already loaded by the buy
-#                   loop): 20-day return positive, close above SMA20, and
-#                   SMA20 itself rising over the last 5 sessions.
-#
-# NOTE this pulls in the OPPOSITE direction from dip-buying in sideways or
-# bearish tape -- a stock that has sold off for 20 days can no longer be
-# bought here no matter how good the 1m dip looks. That is the rule as
-# specified; set MOMENTUM_GATE_MODE='shadow' to see what it would block
-# before it blocks it.
+#   20-DAY leg     already enforced upstream by MIN_20D_MOMENTUM_PCT (+5%) in
+#                   the ranking phase -- see note below.
 MOMENTUM_GATE_MODE       = 'armed'  # 'armed' | 'shadow' | 'off'
 MOM_SHORT_BARS           = 15       # 1m bars for the near-term return
 MOM_SHORT_MIN_RETURN     = 0.0      # near-term return must exceed this
 MOM_SHORT_SMA_BARS       = 20       # 1m SMA the price must sit above
 MOM_SHORT_REQUIRE_SMA    = True
 MOM_SHORT_REQUIRE_HIST_UP= True     # MACD histogram rising bar-over-bar
-MOM_20D_BARS             = 20       # trading sessions for the long leg
-MOM_20D_MIN_RETURN       = 0.0      # 20-day return must exceed this
-MOM_20D_REQUIRE_SMA20    = True     # close above its 20-day SMA
-MOM_20D_REQUIRE_SMA_RISE = True     # 20-day SMA rising over the last 5 bars
-MOM_20D_SMA_SLOPE_BARS   = 5
+# The 20-DAY leg lives elsewhere: USE_20D_MOMENTUM_FILTER / MIN_20D_MOMENTUM_PCT
+# in the ranking phase already requires a 20-session return above +5%, which is
+# strictly stricter than anything this gate would have asked for. Duplicating it
+# here would have been a second, weaker copy of a filter that already runs.
 
 
 def _chandelier_exit_everget(high, low, close):
@@ -11344,11 +11336,13 @@ def ce_macd_buy_bump(symbol):
 
 
 def check_bullish_momentum_gate(symbol, df=None):
-    """(allow, reason) -- requires BOTH near-term and 20-day bullish momentum.
+    """(allow, reason) -- requires near-term bullish momentum.
 
-    `df` is the daily-bar frame the buy loop already holds; passing it avoids
-    a second fetch. The near-term leg reads the cached 1m CE/MACD payload, so
-    this gate costs no additional HTTP on either side.
+    The 20-day half of the operator's rule is enforced upstream by the +5%
+    MIN_20D_MOMENTUM_PCT filter in the ranking phase, so this gate covers the
+    near-term half only. `df` is accepted for signature compatibility and
+    future use. The near-term leg reads the cached 1m CE/MACD payload, so this
+    gate costs no additional HTTP.
 
     Fail-OPEN on missing data (a yfinance gap must not silently halt all
     trading); fail-CLOSED only on a clean read that shows momentum is absent.
@@ -11378,34 +11372,9 @@ def check_bullish_momentum_gate(symbol, df=None):
     except Exception as e:
         notes.append(f'near-term error (fail-open): {e}')
 
-    # ---------------- 20-day leg (daily bars) ----------------
-    try:
-        if df is None or getattr(df, 'empty', True):
-            notes.append('20d: no daily data (fail-open)')
-        else:
-            c = df['Close'].astype(float).to_numpy().flatten()
-            c = c[np.isfinite(c)]
-            nb = int(MOM_20D_BARS)
-            if c.size < nb + int(MOM_20D_SMA_SLOPE_BARS) + 1:
-                notes.append(f'20d: only {c.size} daily bars (fail-open)')
-            else:
-                ret20 = float(c[-1] / c[-1 - nb] - 1.0) if c[-1 - nb] > 0 else None
-                if ret20 is None or ret20 <= float(MOM_20D_MIN_RETURN):
-                    fails.append(f"20-day return {(ret20 or 0.0)*100:+.2f}% <= "
-                                 f"{MOM_20D_MIN_RETURN*100:+.2f}%")
-                else:
-                    notes.append(f"20d {ret20*100:+.2f}%")
-                sma20 = float(np.mean(c[-nb:]))
-                if MOM_20D_REQUIRE_SMA20 and not (c[-1] > sma20):
-                    fails.append(f"close ${c[-1]:.2f} below SMA20 ${sma20:.2f}")
-                if MOM_20D_REQUIRE_SMA_RISE:
-                    sb = int(MOM_20D_SMA_SLOPE_BARS)
-                    sma_prev = float(np.mean(c[-nb - sb:-sb]))
-                    if not (sma20 > sma_prev):
-                        fails.append(f"SMA20 flat/falling over {sb} sessions "
-                                     f"(${sma_prev:.2f} -> ${sma20:.2f})")
-    except Exception as e:
-        notes.append(f'20d error (fail-open): {e}')
+    # The 20-day leg is NOT repeated here. USE_20D_MOMENTUM_FILTER /
+    # MIN_20D_MOMENTUM_PCT in the ranking phase already requires a 20-session
+    # return above +5% -- strictly stricter than this gate would have asked.
 
     if not fails:
         return True, 'bullish momentum: ' + (', '.join(notes) if notes else 'ok')
@@ -14962,9 +14931,16 @@ def get_5min_reversal_bullish(symbol):
 
 
 def multi_timeframe_confirms_bullish(symbol):
-    """Daily trend is already checked by the caller (is_in_uptrend + daily RSI
-    gate) before this runs; here we require the 60m and 5m timeframes to agree."""
-    return get_60min_trend_bullish(symbol) and get_5min_reversal_bullish(symbol)
+    """Daily trend is already checked by the caller (is_in_uptrend) before this
+    runs; here we require the 60m timeframe to agree.
+
+    NARROWED (2026-11-01): the 5-minute leg was dropped. It only asked whether
+    the latest 5m close was >= the prior one -- a single-bar uptick that is now
+    fully subsumed by the 1-minute Chandelier Exit flip, the MACD-histogram
+    pivot and the near-term momentum check, all of which look at the same
+    stretch of tape with far more structure. get_5min_reversal_bullish() is
+    kept for the dashboard/floor lookups that call it directly."""
+    return get_60min_trend_bullish(symbol)
 
 
 # ---------------- Chandelier-exit signal detector (daily bars) ----------------
@@ -17160,16 +17136,30 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
                 continue
 
             daily_rsi = get_daily_rsi(symbol)
-            if daily_rsi is None or daily_rsi > 50:
-                print(f"{yf_symbol}: daily RSI not oversold ({daily_rsi}). Skipping.")
-                update_previous_price(symbol, current_price)
-                continue
+            # GATE REMOVED (2026-11-01): this used to skip any symbol whose
+            # daily RSI(14) was above 50, i.e. it demanded an OVERSOLD daily
+            # reading. That is in direct contradiction with every momentum
+            # requirement in this same loop -- the 20-day +5% filter, the
+            # falling-knife windows and the 200-day SMA test all select for
+            # strength, while this one selected for weakness.
+            #
+            # Measured on 4,820 symbol-days (20 large-cap Nasdaq names, 2y of
+            # daily bars): RSI<=50 alone passes 49.09% and 20d>+5% alone
+            # passes 34.29%, but their INTERSECTION is only 1.97%, and the
+            # full daily gate stack passed exactly 1 symbol-day -- 0.02%.
+            # That is the reason the robot has barely been trading.
+            #
+            # RSI is NOT discarded: it still feeds compute_buy_score, Brain F's
+            # rsi14_norm feature, and the dashboard chart tile. It simply no
+            # longer vetoes an otherwise-favorable setup. Entry TIMING is now
+            # owned by the 1-minute Chandelier Exit + MACD-histogram signal
+            # and the near-term momentum check further down.
 
             # REVIEW ITEM #4: multi-timeframe confirmation. Daily trend/RSI just
             # passed above; also require the 60m and 5m timeframes to agree
             # bullish before spending a request on the 90d candle history.
             if not multi_timeframe_confirms_bullish(symbol):
-                print(f"{yf_symbol}: multi-timeframe confirmation failed (60m/5m not bullish). Skipping.")
+                print(f"{yf_symbol}: multi-timeframe confirmation failed (60m not bullish). Skipping.")
                 update_previous_price(symbol, current_price)
                 continue
 
@@ -17190,33 +17180,31 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
                 print(f"{yf_symbol}: insufficient history ({len(df)} bars). Skipping.")
                 continue
 
-            # ---------------- 2-day momentum gate (hard) ----------------
-            # Most recent 2-day close-to-close momentum must be strictly
-            # positive (last close > close 2 daily bars ago) before we will
-            # buy this symbol. df[-1] is the current forming bar; df[-3] is
-            # the close from 2 completed trading days ago.
-            try:
-                _closes = df['Close'].values.astype(float).flatten()
-                if len(_closes) >= 3 and _closes[-3] > 0:
-                    mom2_pct = (_closes[-1] - _closes[-3]) / _closes[-3]
-                    if mom2_pct <= 0:
-                        print(f"{yf_symbol}: 2-day momentum {mom2_pct*100:+.2f}% "
-                              f"not positive. Skipping.")
-                        update_previous_price(symbol, current_price)
-                        continue
-            except Exception as _e:
-                logging.debug(f"{yf_symbol}: 2-day momentum check skipped ({_e}).")
+            # GATE REMOVED (2026-11-01): the 2-day momentum gate required
+            # close[-1] > close[-3]. The falling-knife gate immediately below
+            # already requires a positive 3-day return, which implies almost
+            # every case this caught, and the 20-day +5% filter in the ranking
+            # phase covers the rest. It was a third overlapping daily-momentum
+            # test on a path that already had two.
 
             # ---------------- Falling-knife multi-window gate (hard) ----------------
             # A stock like ARM in mid-2024 can carry 6-month bull momentum yet still
             # be actively bleeding on the day/week timeframes a daytrader trades on.
             # Reject any symbol whose close-to-close return is negative on ANY of
-            # the four recent windows (1d / 3d / 5d / 14d) -- that is a knife
-            # currently in the air, not a dip to catch. Requires at least 15 daily
-            # bars; len(df) >= 40 is already enforced above.
+            # the recent windows (3d / 5d / 14d) -- that is a knife currently in
+            # the air, not a dip to catch. Requires at least 15 daily bars;
+            # len(df) >= 40 is already enforced above.
+            #
+            # NARROWED (2026-11-01): the 1d window was dropped. Requiring today
+            # to be green forbids buying ANY intraday dip, which is the exact
+            # setup the 1-minute MACD red-dip rule and the operator's own
+            # dip-buying preference are built around -- the robot was being
+            # told to buy the bottom of the dip and simultaneously forbidden
+            # from buying on a down day. The 3d/5d/14d windows still reject a
+            # genuine multi-day decline.
             try:
                 _c = df['Close'].values.astype(float).flatten()
-                _windows = [('1d', 2), ('3d', 4), ('5d', 6), ('14d', 15)]
+                _windows = [('3d', 4), ('5d', 6), ('14d', 15)]
                 _knife = []
                 for _label, _lookback in _windows:
                     if len(_c) < _lookback: continue
@@ -17523,21 +17511,14 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
                 update_previous_price(symbol, current_price)
                 continue
 
-            # ---------------- Early-morning entry gate (belt-and-suspenders) ----------------
-            # Also enforced independently by the RISK_TIME vote inside
-            # chair_decide. We check here too so we skip the (expensive)
-            # ranking / analog / chair phases entirely on symbols that can't
-            # possibly buy right now. In shadow mode the helper always
-            # returns allow=True but the reason string records the
-            # would-deny; we log it and continue.
-            em_allow, em_reason = check_early_morning_entry_gate(current_price, df)
-            if not em_allow:
-                print(f"{yf_symbol}: {DIM}early-morning gate:{RESET} {em_reason}. Skipping.")
-                logging.info(f"{now_str} Skipped {yf_symbol}: early-morning gate — {em_reason}")
-                update_previous_price(symbol, current_price)
-                continue
-            elif em_reason.startswith('[SHADOW would-deny]'):
-                print(f"  [early-gate SHADOW] {yf_symbol}: {em_reason} (would-block, letting through)")
+            # GATE REMOVED (2026-11-01): the early-morning entry gate was dead
+            # code. check_early_morning_entry_gate() only ever denies BEFORE
+            # EARLY_MORNING_CUTOFF_ET (10:05 ET) -- but the hard 10:05 block at
+            # the very top of this function already returns out of the whole
+            # cycle before that time. By the time execution reaches here it is
+            # always past 10:05, so the gate could only ever return allow=True.
+            # The helper itself is kept (still referenced by tests and by the
+            # EARLY_MORNING_GATE_MODE config) but is no longer called here.
 
             # ---------------- CE + MACD 1-minute entry signal ----------------
             # Operator rule from the TradingView chart: Chandelier Exit
