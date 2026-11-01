@@ -9794,6 +9794,7 @@ _SETTINGS_WHITELIST = {
     'playbook_enabled':          ('PLAYBOOK_ENABLED', _as_bool),
     'playbook_bear_size_mult':   ('PLAYBOOK_BEAR_SIZE_MULT', float),
     'close_sweep_sell_all':      ('CLOSE_SWEEP_SELL_ALL', _as_bool),
+    'use_macd_dip_gate':         ('USE_MACD_DIP_GATE', _as_bool),
     # Alpaca screener universe blending
     'screener_enabled':          ('SCREENER_ENABLED', _as_bool),
     'screener_use_most_actives': ('SCREENER_USE_MOST_ACTIVES', _as_bool),
@@ -20305,10 +20306,12 @@ class DashboardWSEngine:
                 floor_post('USER', 'instruction',
                            f"Chandelier brain tuning → {CHANDELIER_BRAIN_TUNING}")
                 return
-            elif key in ('playbook_enabled', 'close_sweep_sell_all'):
+            elif key in ('playbook_enabled', 'close_sweep_sell_all',
+                         'use_macd_dip_gate'):
                 _flag = _as_bool(value)
                 _gname = {'playbook_enabled': 'PLAYBOOK_ENABLED',
-                          'close_sweep_sell_all': 'CLOSE_SWEEP_SELL_ALL'}[key]
+                          'close_sweep_sell_all': 'CLOSE_SWEEP_SELL_ALL',
+                          'use_macd_dip_gate': 'USE_MACD_DIP_GATE'}[key]
                 globals()[_gname] = _flag
                 _persist_setting(key, _flag)
                 floor_post('USER', 'instruction', f"{_gname} → {'ON' if _flag else 'OFF'}")
@@ -20948,6 +20951,7 @@ class DashboardWSEngine:
             'playbook_enabled': bool(globals().get('PLAYBOOK_ENABLED', False)),
             'playbook_bear_size_mult': float(globals().get('PLAYBOOK_BEAR_SIZE_MULT', 1.0)),
             'close_sweep_sell_all': bool(globals().get('CLOSE_SWEEP_SELL_ALL', True)),
+            'use_macd_dip_gate': bool(globals().get('USE_MACD_DIP_GATE', False)),
         }
 
         return state

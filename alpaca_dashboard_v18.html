@@ -1023,6 +1023,19 @@ td.right, th.right { text-align: right; }
             <span class="track"></span>
           </label>
         </div>
+        <div class="inp-row">
+          <label>MACD dip gate (1-min)</label>
+          <label class="tgl" title="V19: buy when the 1-minute MACD histogram AND signal are both in the bottom 30% of their 90-bar range and the histogram turns up; sell only when the histogram peaks AND price falls AND RSI drops below 70. Measured gross edge +0.0657%/trade (t=2.96, out-of-sample). Break-even cost is 0.0657% and the true spread is UNMEASURED, so profitability is unresolved. Turn this off to stop it instantly.">
+            <input type="checkbox" id="sMacdDipGate"
+              onchange="markDirty('use_macd_dip_gate', this.checked)">
+            <span class="track"></span>
+          </label>
+        </div>
+        <div style="font-size:10px;color:var(--amber,#e0a030);padding:2px 0 8px 0;line-height:1.4">
+          ⚠ MACD dip gate: gross edge +0.0657%/trade validated out-of-sample (t=2.96),
+          but break-even cost is 0.0657% and the real spread has not been measured.
+          Profitability is unresolved &mdash; watch realized fills vs the quoted mid.
+        </div>
         <div style="font-size:10px;color:var(--fg3);padding:2px 0 8px 0;line-height:1.4">
           Bear trade size 1.0 = $600 per trade; 0.5 = $300 (bear had few recent test trades).
         </div>
@@ -2332,6 +2345,7 @@ function renderSettings(s) {
   setChk('sScreenerEnabled', s.screener_enabled, 'screener_enabled');
   setChk('sPlaybookEnabled', s.playbook_enabled, 'playbook_enabled');
   setChk('sCloseSellAll', s.close_sweep_sell_all, 'close_sweep_sell_all');
+  setChk('sMacdDipGate', s.use_macd_dip_gate, 'use_macd_dip_gate');
   setIf('sPbBearMult', s.playbook_bear_size_mult, 'playbook_bear_size_mult');
   const scrEl = document.getElementById('sScreenerStatus');
   if (scrEl) {
