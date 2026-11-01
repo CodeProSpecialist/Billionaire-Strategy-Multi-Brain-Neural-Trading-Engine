@@ -10360,6 +10360,13 @@ CLOSE_SWEEP_MINUTE = 45   # 3:45pm ET -- 15 minutes before the 4:00pm close
 # drawdown WORSE: all of the overnight gap risk is kept and all of the
 # overnight gap upside is given away. Payoff ratio falls 0.58 -> 0.38.
 # Set CLOSE_SWEEP_SELL_ALL=True for the old flat-by-the-bell day-trade mode.
+# CONDITIONAL (2026-11-01, operator preference): "sell all" is TRUE whenever
+# flattening the whole book would still leave TODAY non-negative. Only when
+# flattening would push the day's total P&L into the red does the sweep fall
+# back to selling winners only and carrying the losers. Decided at 3:45pm by
+# close_sweep_should_sell_all(); CLOSE_SWEEP_SELL_ALL is the fallback used
+# when CLOSE_SWEEP_CONDITIONAL is off or the P&L lookup fails.
+CLOSE_SWEEP_CONDITIONAL = True
 CLOSE_SWEEP_SELL_ALL = False
 
 # Maximum trading sessions a carried position may stay open. Enforced in
@@ -13071,6 +13078,63 @@ def v18_close_floor_session():
         logging.debug(f"[v18] close session: {_e}")
 
 
+def close_sweep_day_pnl():
+    """(today_pnl, equity, open_unrealized) in dollars, or None on error.
+
+    Uses Alpaca's own account marks: `equity` is the live account value and
+    `last_equity` is the PREVIOUS trading day's closing equity, so their
+    difference is today's total P&L -- realized and unrealized together,
+    which is exactly the quantity the operator's rule is about.
+
+    Deliberately NOT derived from the TradeHistory table: that model has no
+    realized-P&L column (symbols/action/quantity/price/date only), so summing
+    it would silently return 0.00 every time and the rule would always read
+    "today is flat" and flatten the book unconditionally.
+    """
+    try:
+        acct = api.get_account()
+        equity = float(acct.equity)
+        last_equity = float(getattr(acct, 'last_equity', 0) or 0)
+        if last_equity <= 0:
+            return None
+        unreal = 0.0
+        try:
+            for p in api.list_positions():
+                unreal += float(getattr(p, 'unrealized_pl', 0) or 0)
+        except Exception:
+            pass
+        return equity - last_equity, equity, unreal
+    except Exception as e:
+        logging.debug(f"close_sweep_day_pnl failed: {e}")
+        return None
+
+
+def close_sweep_should_sell_all():
+    """(sell_all, reason) for the 3:45pm sweep.
+
+    Operator rule: flatten EVERYTHING when doing so leaves the day flat or
+    green; carry the losers only when flattening would make today negative.
+    Falls back to the static CLOSE_SWEEP_SELL_ALL flag if the P&L cannot be
+    determined -- never guesses.
+    """
+    if not CLOSE_SWEEP_CONDITIONAL:
+        return CLOSE_SWEEP_SELL_ALL, 'conditional sweep off'
+    pnl = close_sweep_day_pnl()
+    if pnl is None:
+        return CLOSE_SWEEP_SELL_ALL, ('day P&L unavailable — falling back to '
+                                      f'CLOSE_SWEEP_SELL_ALL={CLOSE_SWEEP_SELL_ALL}')
+    total, equity, unreal = pnl
+    # `total` already includes the unrealized P&L of everything still open,
+    # so it IS the day's result if we flatten right now. No extra arithmetic.
+    if total >= 0:
+        return True, (f'flattening leaves today at {pnl_color(total)}${total:+.2f}{RESET} '
+                      f'(equity ${equity:,.2f}, open positions ${unreal:+.2f}) — '
+                      f'selling EVERYTHING')
+    return False, (f'flattening would put today at {pnl_color(total)}${total:+.2f}{RESET} '
+                   f'(equity ${equity:,.2f}, open positions ${unreal:+.2f}) — '
+                   f'selling winners only, carrying the losers')
+
+
 def run_close_profit_sweep():
     """
     At CLOSE_SWEEP_HOUR:CLOSE_SWEEP_MINUTE Eastern (default 3:45pm, 15 minutes
@@ -13096,8 +13160,11 @@ def run_close_profit_sweep():
             return
         _close_sweep_last_run_date = today_str  # claim the day before any I/O
 
-    _run_profit_sweep("Pre-Close Sweep (3:45pm ET)" + (" -- SELL ALL (day-trade mode)" if CLOSE_SWEEP_SELL_ALL else ""),
-                      step1_type='market', step1_tif='day', sell_all=CLOSE_SWEEP_SELL_ALL)
+    _sweep_all, _sweep_why = close_sweep_should_sell_all()
+    print(f"  [close sweep] {_sweep_why}")
+    logging.info(f"Close sweep decision: sell_all={_sweep_all} — {_sweep_why}")
+    _run_profit_sweep("Pre-Close Sweep (3:45pm ET)" + (" -- SELL ALL" if _sweep_all else " -- winners only"),
+                      step1_type='market', step1_tif='day', sell_all=_sweep_all)
     # V18: the floor books the day out loud once we're flat.
     try:
         v18_close_floor_session()
