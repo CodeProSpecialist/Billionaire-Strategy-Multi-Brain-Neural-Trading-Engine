@@ -10366,13 +10366,29 @@ CLOSE_SWEEP_MINUTE = 45   # 3:45pm ET -- 15 minutes before the 4:00pm close
 # back to selling winners only and carrying the losers. Decided at 3:45pm by
 # close_sweep_should_sell_all(); CLOSE_SWEEP_SELL_ALL is the fallback used
 # when CLOSE_SWEEP_CONDITIONAL is off or the P&L lookup fails.
-CLOSE_SWEEP_CONDITIONAL = True
-CLOSE_SWEEP_SELL_ALL = False
+# HARD CONSTRAINT (2026-11-01): NOTHING IS HELD THROUGH THE CLOSING BELL.
+# The operator lost most of his 2023 money to overnight holds and will not
+# carry positions again. This is a risk rule, not a tuning parameter -- do
+# NOT flip these back to chase backtest return. The measured gap damage backs
+# him up: over the test year 118 trades stopped out at -4.49% average against
+# a 3.00% stop, because overnight gaps open straight through a stop price.
+CLOSE_SWEEP_CONDITIONAL = False
+CLOSE_SWEEP_SELL_ALL = True
 
-# Maximum trading sessions a carried position may stay open. Enforced in
-# sell_stocks; 2 matches the backtested "hold up to 2 days" horizon.
-MAX_HOLD_SESSIONS = 2
+# Maximum trading sessions a position may stay open. 1 = same-day only, a
+# belt-and-suspenders backstop to the 3:45pm flatten: if the sweep somehow
+# failed to fill, this closes the position at market on the next session.
+MAX_HOLD_SESSIONS = 1
 MAX_HOLD_ENFORCE = True
+
+# Final safety net. If anything is STILL open after the 3:45pm sweep, retry
+# at FINAL_FLATTEN_HOUR:MINUTE ET and keep retrying every cycle until the
+# bell. The 3:45pm sweep runs once per day behind a date guard, so without
+# this a single failed escalation would carry a position overnight -- the one
+# outcome the operator cannot accept.
+FINAL_FLATTEN_ENABLED = True
+FINAL_FLATTEN_HOUR = 15
+FINAL_FLATTEN_MINUTE = 50
 # No new entries at/after this time (ET), so nothing is bought after the
 # 3:45pm flatten and then carried overnight.
 NO_NEW_BUYS_AFTER = (15, 30)
@@ -13076,6 +13092,70 @@ def v18_close_floor_session():
             pass
     except Exception as _e:
         logging.debug(f"[v18] close session: {_e}")
+
+
+def run_final_flatten():
+    """Last-resort flatten so NOTHING is carried through the closing bell.
+
+    The 3:45pm sweep runs once per day behind a date guard, so if its
+    escalation chain failed to fill -- a halt, a rejected order, an API
+    blip -- the position would otherwise sit overnight. This runs EVERY
+    cycle from FINAL_FLATTEN_HOUR:MINUTE until the 4:00pm close and market
+    -sells anything still open, winners and losers alike, with no profit
+    test and no once-per-day guard.
+
+    The operator cannot hold overnight. This is the backstop that makes that
+    guarantee hold even when something upstream breaks.
+    """
+    if not FINAL_FLATTEN_ENABLED:
+        return
+    try:
+        now = datetime.now(eastern)
+        start = now.replace(hour=FINAL_FLATTEN_HOUR, minute=FINAL_FLATTEN_MINUTE,
+                            second=0, microsecond=0)
+        end = now.replace(hour=16, minute=0, second=0, microsecond=0)
+        if not (start <= now < end):
+            return
+        try:
+            positions = api.list_positions()
+        except Exception as e:
+            logging.error(f"[final flatten] could not list positions: {e}")
+            return
+        if not positions:
+            return
+        now_str = now.strftime("Eastern Time | %I:%M:%S %p | %m-%d-%Y |")
+        print(f"{RED}[FINAL FLATTEN]{RESET} {len(positions)} position(s) still open at "
+              f"{now.strftime('%H:%M')} ET — closing everything before the bell.")
+        logging.warning(f"{now_str} FINAL FLATTEN: {len(positions)} position(s) "
+                        f"still open after the 3:45pm sweep.")
+        for p in positions:
+            try:
+                sym = p.symbol
+                qty = abs(float(p.qty))
+                if qty <= 0:
+                    continue
+                px = None
+                try:
+                    px = float(getattr(p, 'current_price', 0) or 0) or None
+                except Exception:
+                    pass
+                if px is None:
+                    px = get_current_price(to_yf(sym))
+                _cancel_existing_sell_orders(sym, "FINAL FLATTEN", now_str)
+                filled_qty, notional, steps = _sell_with_escalation(
+                    sym, round(qty, 6), px, 'market', 'day', "FINAL FLATTEN", now_str)
+                if filled_qty > 0:
+                    logging.warning(f"{now_str} FINAL FLATTEN sold {sym}: "
+                                    f"{filled_qty:.4f} sh @ avg "
+                                    f"${notional / filled_qty:.2f} via [{', '.join(steps)}].")
+                else:
+                    print(f"{RED}[FINAL FLATTEN] {sym}: no fill — retrying next cycle."
+                          f"{RESET}")
+                    logging.error(f"{now_str} FINAL FLATTEN produced no fill for {sym}.")
+            except Exception as e:
+                logging.error(f"[final flatten] {getattr(p, 'symbol', '?')} failed: {e}")
+    except Exception as e:
+        logging.error(f"run_final_flatten raised: {e}")
 
 
 def close_sweep_day_pnl():
@@ -26657,6 +26737,14 @@ def main():
                 run_close_profit_sweep()
             except Exception as e:
                 logging.error(f"Pre-close profit sweep raised: {e}")
+
+            # Backstop: from 3:50pm ET to the bell, market-sell anything the
+            # 3:45pm sweep left open. Runs every cycle, no once-per-day guard,
+            # so a single failed escalation cannot carry a position overnight.
+            try:
+                run_final_flatten()
+            except Exception as e:
+                logging.error(f"Final flatten raised: {e}")
 
             if PRINT_SYMBOLS_TO_BUY:
                 print("\nSymbols to Purchase:\n")
