@@ -11688,21 +11688,88 @@ def check_pretrade_backtest_gate(symbol):
 # top, the MACD(12,26,9) histogram underneath, and the live RSI(14) value.
 CE_CHART_BARS = 90        # 1m candles sent to the browser per position
 CE_CHART_TTL  = 30        # seconds; the tile redraws from cache in between
-CE_CHART_DEEP_BOOK = 8    # positions above this widen the per-symbol refresh
-CE_CHART_TTL_DEEP  = 40   # seconds per symbol once the book passes that mark
 
 
-def _fetch_ce_chart_series(symbol):
-    """Raw (uncached) chart payload for one symbol. Returns a JSON-safe dict."""
+def _ce_minute_bars_batch(symbols):
+    """One Alpaca request for the 1m bars of MANY symbols at once.
+
+    The per-symbol yfinance path costs one HTTP round trip per position, so a
+    deep book either hammers the budget or has to be throttled. Alpaca serves
+    up to 100 symbols of minute bars in a single call, which is what lets the
+    whole book refresh on the base 30s interval again.
+
+    Returns {yf_symbol: DataFrame} shaped exactly like yf_history output
+    (Open/High/Low/Close/Volume on a DatetimeIndex). Symbols Alpaca cannot
+    serve are simply absent, and the caller falls back to yfinance for those.
+    """
+    if not symbols:
+        return {}
+    eligible = [s for s in symbols if s and not s.startswith('^')]
+    if not eligible:
+        return {}
+    alpaca_syms = [to_alpaca(s) for s in eligible]
+    yf_by_alpaca = dict(zip(alpaca_syms, eligible))
+    end = datetime.now(pytz.UTC)
+    # CE_PERIOD is '2d' of 1m bars; pad so the indicator warmup is covered
+    # even across a weekend or holiday gap.
+    start = end - timedelta(days=5)
+
+    out = {}
+    BATCH = 100
+    for i in range(0, len(alpaca_syms), BATCH):
+        chunk = alpaca_syms[i:i + BATCH]
+        try:
+            req = _AlpacaBarsRequest(
+                symbol_or_symbols=chunk,
+                timeframe=_AlpacaTimeFrame(1, _AlpacaTimeFrameUnit.Minute),
+                start=start,
+                end=end,
+                feed=_AlpacaDataFeed.IEX,
+            )
+            resp = alpaca_data_client.get_stock_bars(req)
+            data = resp.data if hasattr(resp, 'data') else resp
+            for asym in chunk:
+                bars = data.get(asym, []) if hasattr(data, 'get') else []
+                if not bars:
+                    continue
+                yf_sym = yf_by_alpaca.get(asym, asym)
+                try:
+                    df = pd.DataFrame([{
+                        'Open':   float(b.open),
+                        'High':   float(b.high),
+                        'Low':    float(b.low),
+                        'Close':  float(b.close),
+                        'Volume': float(b.volume),
+                    } for b in bars],
+                        index=pd.DatetimeIndex([b.timestamp for b in bars], name='Date'),
+                    )
+                    if not df.empty and not df['Close'].isna().all():
+                        out[yf_sym] = df
+                except Exception:
+                    continue
+        except Exception as e:
+            logging.debug(f"[charts] minute bar batch failed "
+                          f"({len(chunk)} syms): {e}")
+            continue
+    return out
+
+
+def _fetch_ce_chart_series(symbol, df=None):
+    """Raw (uncached) chart payload for one symbol. Returns a JSON-safe dict.
+
+    `df` lets the caller hand in bars already pulled by
+    _ce_minute_bars_batch(), so a whole book costs one request instead of
+    one per symbol. Without it this falls back to the single-symbol fetch."""
     out = {'symbol': symbol, 'ok': False, 'bars': [], 'ce': [],
            'signals': [], 'hist': [], 'rsi': None, 'direction': None,
            'error': None}
-    try:
-        df = yf_history(symbol, period=CE_PERIOD, interval=CE_INTERVAL,
-                        prepost=False, auto_adjust=False)
-    except Exception as e:
-        out['error'] = f'fetch failed: {e}'
-        return out
+    if df is None:
+        try:
+            df = yf_history(symbol, period=CE_PERIOD, interval=CE_INTERVAL,
+                            prepost=False, auto_adjust=False)
+        except Exception as e:
+            out['error'] = f'fetch failed: {e}'
+            return out
     if df is None or df.empty:
         out['error'] = 'no bars'
         return out
@@ -11816,24 +11883,6 @@ _ce_chart_cache = {}
 _ce_chart_lock = threading.Lock()
 
 
-def _ce_chart_ttl_for(book_size):
-    """Refresh interval per symbol, widened as the book deepens.
-
-    Up to 8 positions the chart tile is cheap, so every symbol refreshes on
-    the base CE_CHART_TTL. Past that the fetch count per window is what
-    threatens the yfinance budget, not the staleness -- 1m bars only move
-    once a minute anyway, so a deeper book simply refreshes each symbol less
-    often rather than dropping symbols off the list."""
-    n = int(book_size or 0)
-    if n <= CE_CHART_DEEP_BOOK:
-        return CE_CHART_TTL
-    if n <= 16:
-        return CE_CHART_TTL_DEEP
-    if n <= 24:
-        return CE_CHART_TTL_DEEP + 20
-    return CE_CHART_TTL_DEEP + 40
-
-
 def _ce_chart_jitter(symbol, ttl):
     """Deterministic per-symbol offset (0..~20% of the TTL) so a whole book
     does not expire on the same broadcast tick and fire every fetch at once.
@@ -11844,7 +11893,15 @@ def _ce_chart_jitter(symbol, ttl):
         return 0
 
 
-def get_ce_chart_series(symbol, ttl=None):
+def _ce_chart_cached(symbol, now=None):
+    """Unexpired cached payload for a symbol, or None."""
+    now = time.time() if now is None else now
+    with _ce_chart_lock:
+        hit = _ce_chart_cache.get(symbol)
+        return hit[1] if (hit and hit[0] > now) else None
+
+
+def get_ce_chart_series(symbol, ttl=None, df=None):
     """Cached chart payload. The dashboard broadcasts ~1Hz but 1-minute bars
     only move once a minute, so this is throttled per symbol -- otherwise the
     tile alone would exhaust the yfinance budget. `ttl` defaults to
@@ -11857,7 +11914,7 @@ def get_ce_chart_series(symbol, ttl=None):
         if hit and hit[0] > now:
             return hit[1]
     try:
-        payload = _fetch_ce_chart_series(symbol)
+        payload = _fetch_ce_chart_series(symbol, df=df)
     except Exception as e:
         payload = {'symbol': symbol, 'ok': False, 'error': str(e),
                    'bars': [], 'ce': [], 'hist': [], 'signals': [],
@@ -11884,12 +11941,27 @@ def get_position_charts(max_positions=30):
         syms = list(position_book.symbols())
     except Exception:
         syms = []
-    # One refresh interval for the whole book, chosen from how deep it is.
-    ttl = _ce_chart_ttl_for(len(syms))
-    charts = []
-    for sym in syms[:max_positions]:
+    want = syms[:max_positions]
+
+    # Whatever has gone stale this tick is refetched in ONE batched Alpaca
+    # request rather than a round trip per symbol, so the whole book can stay
+    # on the base 30s interval no matter how deep it is.
+    stale = [s for s in want if _ce_chart_cached(s) is None]
+    batch_df = {}
+    if len(stale) > 1:
         try:
-            charts.append(get_ce_chart_series(sym, ttl=ttl))
+            batch_df = _ce_minute_bars_batch(stale)
+        except Exception as e:
+            logging.debug(f"[charts] batch fetch failed, per-symbol fallback: {e}")
+            batch_df = {}
+
+    charts = []
+    for sym in want:
+        try:
+            # Symbols the batch could not serve fall through to the
+            # single-symbol yfinance path inside _fetch_ce_chart_series.
+            charts.append(get_ce_chart_series(sym, ttl=CE_CHART_TTL,
+                                              df=batch_df.get(sym)))
         except Exception as e:
             charts.append({'symbol': sym, 'ok': False, 'error': str(e),
                            'bars': [], 'ce': [], 'hist': [], 'signals': [],
