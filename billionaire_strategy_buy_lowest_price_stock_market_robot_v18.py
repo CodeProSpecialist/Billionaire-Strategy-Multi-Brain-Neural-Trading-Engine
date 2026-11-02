@@ -11688,6 +11688,8 @@ def check_pretrade_backtest_gate(symbol):
 # top, the MACD(12,26,9) histogram underneath, and the live RSI(14) value.
 CE_CHART_BARS = 90        # 1m candles sent to the browser per position
 CE_CHART_TTL  = 30        # seconds; the tile redraws from cache in between
+CE_CHART_DEEP_BOOK = 8    # positions above this widen the per-symbol refresh
+CE_CHART_TTL_DEEP  = 40   # seconds per symbol once the book passes that mark
 
 
 def _fetch_ce_chart_series(symbol):
@@ -11814,10 +11816,41 @@ _ce_chart_cache = {}
 _ce_chart_lock = threading.Lock()
 
 
-def get_ce_chart_series(symbol):
+def _ce_chart_ttl_for(book_size):
+    """Refresh interval per symbol, widened as the book deepens.
+
+    Up to 8 positions the chart tile is cheap, so every symbol refreshes on
+    the base CE_CHART_TTL. Past that the fetch count per window is what
+    threatens the yfinance budget, not the staleness -- 1m bars only move
+    once a minute anyway, so a deeper book simply refreshes each symbol less
+    often rather than dropping symbols off the list."""
+    n = int(book_size or 0)
+    if n <= CE_CHART_DEEP_BOOK:
+        return CE_CHART_TTL
+    if n <= 16:
+        return CE_CHART_TTL_DEEP
+    if n <= 24:
+        return CE_CHART_TTL_DEEP + 20
+    return CE_CHART_TTL_DEEP + 40
+
+
+def _ce_chart_jitter(symbol, ttl):
+    """Deterministic per-symbol offset (0..~20% of the TTL) so a whole book
+    does not expire on the same broadcast tick and fire every fetch at once.
+    Hash-based, so a symbol keeps the same slot across refreshes."""
+    try:
+        return (hash(symbol) % max(1, int(ttl * 0.2)))
+    except Exception:
+        return 0
+
+
+def get_ce_chart_series(symbol, ttl=None):
     """Cached chart payload. The dashboard broadcasts ~1Hz but 1-minute bars
-    only move once a minute, so this is throttled to CE_CHART_TTL seconds per
-    symbol -- otherwise the tile alone would exhaust the yfinance budget."""
+    only move once a minute, so this is throttled per symbol -- otherwise the
+    tile alone would exhaust the yfinance budget. `ttl` defaults to
+    CE_CHART_TTL; get_position_charts() passes a wider value for a deep
+    book."""
+    ttl = CE_CHART_TTL if ttl is None else int(ttl)
     now = time.time()
     with _ce_chart_lock:
         hit = _ce_chart_cache.get(symbol)
@@ -11830,7 +11863,8 @@ def get_ce_chart_series(symbol):
                    'bars': [], 'ce': [], 'hist': [], 'signals': [],
                    'rsi': None}
     with _ce_chart_lock:
-        _ce_chart_cache[symbol] = (now + CE_CHART_TTL, payload)
+        _ce_chart_cache[symbol] = (now + ttl + _ce_chart_jitter(symbol, ttl),
+                                   payload)
         # Drop charts for symbols we no longer hold so the cache can't grow
         # without bound across a long session.
         if len(_ce_chart_cache) > 80:
@@ -11850,10 +11884,12 @@ def get_position_charts(max_positions=30):
         syms = list(position_book.symbols())
     except Exception:
         syms = []
+    # One refresh interval for the whole book, chosen from how deep it is.
+    ttl = _ce_chart_ttl_for(len(syms))
     charts = []
     for sym in syms[:max_positions]:
         try:
-            charts.append(get_ce_chart_series(sym))
+            charts.append(get_ce_chart_series(sym, ttl=ttl))
         except Exception as e:
             charts.append({'symbol': sym, 'ok': False, 'error': str(e),
                            'bars': [], 'ce': [], 'hist': [], 'signals': [],
