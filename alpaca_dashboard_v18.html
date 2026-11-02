@@ -209,6 +209,10 @@ td.right, th.right { text-align: right; }
 .os-val  { font-size:20px; font-weight:700; line-height:1.25;
            font-family:var(--mono, ui-monospace,monospace); }
 .os-sub  { font-size:10.5px; color:var(--fg3); }
+#os-tbl tr.os-row { cursor:pointer; }
+#os-tbl tr.os-row:hover { background:var(--bg3); }
+#os-tbl tr.os-row-sel { background:var(--bg4); }
+#os-tbl tr.os-row-sel td:first-child { box-shadow:inset 2px 0 0 var(--green, #10b981); }
 .nq-bar { height:8px; border-radius:4px; background:var(--bg4, #2a2d3a); overflow:hidden; }
 .nq-bar > i { display:block; height:100%; }
 .cal-card .card-bd { min-height:560px; }
@@ -2097,6 +2101,19 @@ function _drawPositionChart(canvas, d) {
   });
 }
 
+// Click a row in the summary table to pin that symbol into the headline
+// chart. Delegated once at load so the handler survives every table rebuild.
+window.__osSel = window.__osSel || null;
+document.addEventListener('click', (ev) => {
+  const row = ev.target && ev.target.closest && ev.target.closest('#os-tbl tr[data-os-sym]');
+  if (!row) return;
+  const sym = row.getAttribute('data-os-sym');
+  if (!sym) return;
+  // Clicking the pinned row again releases it back to the automatic pick.
+  window.__osSel = (window.__osSel === sym) ? null : sym;
+  if (window.__lastState) { try { renderOwnedSummary(window.__lastState); } catch (e) {} }
+});
+
 // ── Owned Positions Summary (top-of-dashboard overview) ────────────────
 // Always renders a chart: the largest-move owned position when the book has
 // anything in it, otherwise the top candidate in the robot's current scanner
@@ -2157,7 +2174,8 @@ function renderOwnedSummary(s) {
       empty.style.display = 'none';
       tbody.innerHTML = pos.slice()
         .sort((x, y) => (+y.gain_pct || 0) - (+x.gain_pct || 0))
-        .map(p => `<tr>
+        .map(p => `<tr class="os-row${p.symbol === window.__osSel ? ' os-row-sel' : ''}"
+                       data-os-sym="${p.symbol || ''}" title="Chart ${p.symbol || ''}">
           <td><b>${p.symbol || '?'}</b></td>
           <td class="right">${fmt.usd(p.avg_price)}</td>
           <td class="right">${fmt.usd(p.current_price)}</td>
@@ -2169,7 +2187,15 @@ function renderOwnedSummary(s) {
 
   // Headline chart — owned leader, else the watched candidate.
   let pick = null;
-  if (!watchMode && pos.length) {
+  // A row the operator clicked wins over the auto-pick, as long as that
+  // symbol is still held and still has a chart payload this tick.
+  if (!watchMode && window.__osSel) {
+    const held = pos.some(p => p.symbol === window.__osSel);
+    const sel = charts.find(c => c.symbol === window.__osSel);
+    if (held && sel) pick = sel;
+    else if (!held) window.__osSel = null;   // position closed — release the pin
+  }
+  if (!pick && !watchMode && pos.length) {
     const order = pos.slice().sort((x, y) =>
       Math.abs(+y.gain_pct || 0) - Math.abs(+x.gain_pct || 0));
     for (const p of order) {
@@ -2197,7 +2223,11 @@ function renderOwnedSummary(s) {
   const isWatch = !!pick.watch;
   if (title) {
     title.innerHTML = (isWatch ? '👁 WATCHING TO BUY — ' : '📈 ') +
-                      `<span style="font-size:13px">${pick.symbol}</span>`;
+                      `<span style="font-size:13px">${pick.symbol}</span>` +
+                      (window.__osSel === pick.symbol
+                        ? ' <span style="font-weight:400;color:var(--fg3);font-size:9.5px">'
+                          + '📌 pinned — click the row again to unpin</span>'
+                        : '');
   }
   if (note) {
     note.textContent = isWatch
