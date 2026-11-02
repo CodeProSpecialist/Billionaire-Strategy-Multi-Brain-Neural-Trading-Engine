@@ -209,6 +209,18 @@ td.right, th.right { text-align: right; }
 .os-val  { font-size:20px; font-weight:700; line-height:1.25;
            font-family:var(--mono, ui-monospace,monospace); }
 .os-sub  { font-size:10.5px; color:var(--fg3); }
+/* Position list scrolls on its own so a deep book stays inside the card,
+   with the column header pinned while the rows move under it. */
+#os-tbl-wrap { scrollbar-width:thin; scrollbar-color:var(--bg4) transparent; }
+#os-tbl-wrap::-webkit-scrollbar { width:9px; }
+#os-tbl-wrap::-webkit-scrollbar-track { background:transparent; }
+#os-tbl-wrap::-webkit-scrollbar-thumb {
+  background:var(--bg4); border-radius:5px; border:2px solid var(--bg2); }
+#os-tbl-wrap::-webkit-scrollbar-thumb:hover { background:var(--fg3); }
+#os-tbl thead th {
+  position:sticky; top:0; z-index:2; background:var(--bg2);
+  padding-top:6px; padding-bottom:4px;
+  box-shadow:inset 0 -1px 0 var(--border); }
 #os-tbl tr.os-row { cursor:pointer; }
 #os-tbl tr.os-row:hover { background:var(--bg3); }
 #os-tbl tr.os-row-sel { background:var(--bg4); }
@@ -275,8 +287,10 @@ td.right, th.right { text-align: right; }
         <canvas id="os-chart" data-h="340" style="width:100%;height:340px;display:block;"></canvas>
         <div id="os-chart-note" style="font-size:10px;color:var(--fg3);padding-top:4px;"></div>
       </div>
-      <div style="border:1px solid var(--border);border-radius:6px;background:var(--bg2);
-                  padding:6px 8px;min-width:0;overflow:auto;max-height:300px;">
+      <div id="os-tbl-wrap"
+           style="border:1px solid var(--border);border-radius:6px;background:var(--bg2);
+                  padding:0 8px 6px;min-width:0;overflow-y:auto;overflow-x:hidden;
+                  height:366px;">
         <table id="os-tbl" style="width:100%;font-size:11.5px;">
           <thead><tr>
             <th>Symbol</th>

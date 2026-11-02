@@ -11833,16 +11833,19 @@ def get_ce_chart_series(symbol):
         _ce_chart_cache[symbol] = (now + CE_CHART_TTL, payload)
         # Drop charts for symbols we no longer hold so the cache can't grow
         # without bound across a long session.
-        if len(_ce_chart_cache) > 40:
+        if len(_ce_chart_cache) > 80:
             for k in [k for k, v in list(_ce_chart_cache.items())
                       if v[0] < now - 300]:
                 _ce_chart_cache.pop(k, None)
     return payload
 
 
-def get_position_charts(max_positions=8):
+def get_position_charts(max_positions=30):
     """Chart payloads for every CURRENTLY OWNED position, newest cache first.
-    Capped at max_positions so a large book can't stall the broadcast tick."""
+    Capped at max_positions so a large book can't stall the broadcast tick.
+    Each symbol is served from the CE_CHART_TTL cache between refreshes, so
+    the dashboard's scrolling position list can carry a deep book without
+    issuing a fetch per symbol on every tick."""
     try:
         syms = list(position_book.symbols())
     except Exception:
