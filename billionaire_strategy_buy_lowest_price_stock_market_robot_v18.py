@@ -10283,6 +10283,32 @@ DB_RECONCILE_INTERVAL_SECS = 1800   # re-sync SQLite positions vs Alpaca every 3
 PROFIT_TOUCHED_PCT = 0.002       # +0.2% counts as "was profitable" for rescue
 ROUND_TRIP_EXIT_GAIN = 0.0       # exit when a touched-profit position drops to <= breakeven
 
+# ---------------- Residual fractional-share ("dust") sweep ----------------
+# Alpaca fractional fills routinely leave a sliver behind after a sell: the
+# first sell order is sized off qty_available (what is actually sellable at
+# that instant), so a few ten-thousandths of a share -- worth well under a
+# dollar, sometimes under a penny -- can stay in the account. That sliver kept
+# the Position row alive as a "partial sell", which meant the trade never
+# closed: no TradeFeatures outcome, no PERSYMBOL/GOVERNOR settlement, and the
+# symbol stayed half-owned indefinitely.
+#
+# Fix: after the FIRST sell order is confirmed filled, re-read the broker
+# position and fire a SECOND sell order for whatever remainder is left, as
+# long as that remainder is worth less than DUST_MAX_VALUE_USD. Both fills
+# belong to the same exit, so they are merged into ONE round-trip trade --
+# one TradeHistory sell row, one settlement, one round-trip count.
+DUST_SWEEP_MODE = 'armed'         # 'armed' | 'off'
+DUST_MAX_VALUE_USD = 1.00         # remainder worth less than $1.00 gets swept
+DUST_SUBPENNY_VALUE_USD = 0.01    # below $0.01 a qty order is usually rejected ->
+                                  # liquidate with close_position() instead
+DUST_SWEEP_TIMEOUT_SECS = 20      # poll budget for the second sell order
+DUST_QTY_EPSILON = 1e-9           # anything at/below this is "flat"
+
+# Round-trip ledger: one buy and its complete exit (first sell order PLUS any
+# dust sweep that follows it) is exactly ONE completed round trip trade.
+_ROUND_TRIP_LOCK = threading.Lock()
+_ROUND_TRIP_STATE = {'date': None, 'count': 0, 'total': 0}
+
 # ---------------- Volatility-based profit targets (review item #2) ----------------
 # Flat percentages above are used ONLY as a fallback when ATR is unavailable.
 # When ATR is available, arm/giveback scale with the stock's own volatility so
@@ -12976,7 +13002,214 @@ def _sell_with_escalation(symbol, qty, last_known_price, step1_type, step1_tif,
         logging.error(f"{now_str} [{sweep_label}] {symbol} step 3 submit failed: {e}. "
                       f"{remaining_qty:.4f} sh unsold.")
 
+    # ---- Step 4: second sell order for any sub-$1.00 fractional remainder ----
+    # Only runs once something above actually filled, i.e. after a confirmed
+    # first sell. Merged into this same exit's totals so the escalation chain
+    # still reports ONE round trip, not two.
+    if total_filled_qty > 0:
+        _avg_px = (total_notional / total_filled_qty) if total_filled_qty else last_known_price
+        dust_qty, dust_px = sweep_residual_dust(symbol, sweep_label, now_str,
+                                                fallback_price=_avg_px)
+        if dust_qty > 0:
+            total_filled_qty += dust_qty
+            total_notional += dust_qty * dust_px
+            steps_used.append(f"dust:{dust_qty:.6f}sh@${dust_px:.2f}")
+
     return total_filled_qty, total_notional, steps_used
+
+
+def _get_residual_position(symbol):
+    """
+    Read the live broker position for `symbol` and return
+    (qty, current_price, market_value) with absolute values, or None when the
+    account is flat in that symbol (no position, or a quantity at/below
+    DUST_QTY_EPSILON). Never raises.
+    """
+    try:
+        p = api.get_position(symbol)
+    except Exception:
+        return None
+    try:
+        qty = abs(float(p.qty))
+    except Exception:
+        return None
+    if qty <= DUST_QTY_EPSILON:
+        return None
+    try:
+        price = abs(float(getattr(p, 'current_price', 0) or 0))
+    except Exception:
+        price = 0.0
+    try:
+        mv = abs(float(getattr(p, 'market_value', 0) or 0))
+    except Exception:
+        mv = 0.0
+    if mv <= 0 and price > 0:
+        mv = qty * price
+    return qty, price, mv
+
+
+def sweep_residual_dust(symbol, label, now_str, fallback_price=0.0):
+    """
+    SECOND SELL ORDER, fired only AFTER a first sell order for `symbol` has
+    been confirmed filled.
+
+    Alpaca sizes the first sell off qty_available, so a fractional sliver can
+    survive the exit. This sweeps that sliver when it is worth less than
+    DUST_MAX_VALUE_USD ($1.00):
+
+      * remainder >= DUST_SUBPENNY_VALUE_USD ($0.01) -> plain market sell for
+        the exact remaining qty, polled to a terminal status.
+      * remainder < $0.01 -> Alpaca rejects a notional that small, so the
+        position is liquidated with close_position() instead, which is the
+        broker-side path that can clear sub-penny fractional residue.
+
+    A remainder worth MORE than $1.00 is NOT dust -- it is a real partial
+    exit, and the normal partial-sell bookkeeping is left to handle it.
+
+    Returns (dust_qty, dust_price). The caller MERGES these into the first
+    sell's quantity and notional, so the whole exit stays ONE completed round
+    trip trade rather than being counted as two separate sells.
+    """
+    if DUST_SWEEP_MODE != 'armed':
+        return 0.0, 0.0
+
+    # The broker's position record lags the fill by a beat; give it a moment
+    # before concluding either "flat" or "dust left behind".
+    res = None
+    for _ in range(3):
+        res = _get_residual_position(symbol)
+        if res is not None:
+            break
+        time.sleep(1)
+    if res is None:
+        return 0.0, 0.0
+
+    qty, price, mv = res
+    if price <= 0:
+        price = fallback_price or 0.0
+        if price > 0:
+            mv = qty * price
+
+    if mv > DUST_MAX_VALUE_USD:
+        print(f"{symbol}: [{label}] {qty:.6f} sh (~${mv:.2f}) left after the first sell — "
+              f"above the ${DUST_MAX_VALUE_USD:.2f} dust threshold, so this is a real "
+              f"partial exit, not dust. Leaving it to the normal partial-sell path.")
+        logging.info(f"{now_str} [{label}] {symbol}: residual ${mv:.2f} exceeds dust "
+                     f"threshold; no second sell order placed.")
+        return 0.0, 0.0
+
+    # Free the remainder from anything still resting against it.
+    _cancel_existing_sell_orders(symbol, f"{label} DUST", now_str)
+    res2 = _get_residual_position(symbol)
+    if res2 is None:
+        return 0.0, 0.0
+    qty, price2, mv2 = res2
+    if price2 > 0:
+        price, mv = price2, mv2
+
+    dust_price = price if price > 0 else (fallback_price or 0.0)
+    dust_qty = 0.0
+    order = None
+    sub_penny = mv < DUST_SUBPENNY_VALUE_USD
+
+    try:
+        if sub_penny:
+            print(f"{symbol}: [{label}] remainder {qty:.9f} sh is worth ~${mv:.4f}, under "
+                  f"${DUST_SUBPENNY_VALUE_USD:.2f} — liquidating via close_position() "
+                  f"since an order that small would be rejected.")
+            order = api.close_position(symbol)
+        else:
+            print(f"{symbol}: [{label}] SECOND SELL ORDER — first sell confirmed filled, "
+                  f"sweeping the {qty:.6f} sh remainder (~${mv:.4f}, under "
+                  f"${DUST_MAX_VALUE_USD:.2f}) at market.")
+            order = api.submit_order(symbol=symbol, qty=str(qty), side='sell',
+                                     type='market', time_in_force='day')
+    except Exception as e:
+        logging.warning(f"{now_str} [{label}] {symbol}: dust sell submit failed ({e}); "
+                        f"trying close_position().")
+        try:
+            order = api.close_position(symbol)
+        except Exception as e2:
+            print(f"{symbol}: [{label}] could not sweep the {qty:.9f} sh remainder "
+                  f"(~${mv:.4f}): {e2}. Leaving it for the next cycle.")
+            logging.warning(f"{now_str} [{label}] {symbol}: close_position() also failed: {e2}")
+            return 0.0, 0.0
+
+    oid = getattr(order, 'id', None)
+    if oid:
+        _terminal, fq, fp, status = _poll_order_terminal(oid, DUST_SWEEP_TIMEOUT_SECS)
+        dust_qty = fq
+        if fp:
+            dust_price = fp
+        if fq <= 0:
+            logging.info(f"{now_str} [{label}] {symbol}: dust order {oid} ended "
+                         f"{status} with no reported fill.")
+
+    # Confirm the account is actually flat before claiming the sweep worked.
+    still = _get_residual_position(symbol)
+    if still is None:
+        if dust_qty <= 0:
+            # close_position() doesn't always report a filled_qty we can read,
+            # but the position is gone, so the original remainder is what sold.
+            dust_qty = qty
+        print(f"{symbol}: [{label}] remainder cleared — position is flat. The first sell "
+              f"and this dust sweep together count as ONE completed round trip trade.")
+        logging.info(f"{now_str} [{label}] {symbol}: dust sweep sold {dust_qty:.9f} sh "
+                     f"@ ${dust_price:.4f}; position flat, merged into one round trip.")
+    else:
+        print(f"{symbol}: [{label}] {RED}WARNING{RESET} {still[0]:.9f} sh (~${still[2]:.4f}) "
+              f"still held after the dust sweep — will retry on a later exit.")
+        logging.warning(f"{now_str} [{label}] {symbol}: {still[0]:.9f} sh (~${still[2]:.4f}) "
+                        f"survived the dust sweep.")
+
+    return dust_qty, (dust_price if dust_price > 0 else 0.0)
+
+
+def register_completed_round_trip(symbol, qty, price, label='EXIT'):
+    """
+    Record ONE completed round trip trade: a buy and the exit that closed it,
+    including any second (dust) sell order that followed the first fill. Called
+    exactly once per symbol, at the moment the Position row is removed because
+    the account is flat in that symbol -- so a dust sweep can never inflate the
+    count to two.
+    """
+    try:
+        today = datetime.now(eastern).strftime('%Y-%m-%d')
+    except Exception:
+        today = str(date.today())
+    with _ROUND_TRIP_LOCK:
+        if _ROUND_TRIP_STATE['date'] != today:
+            _ROUND_TRIP_STATE['date'] = today
+            _ROUND_TRIP_STATE['count'] = 0
+        _ROUND_TRIP_STATE['count'] += 1
+        _ROUND_TRIP_STATE['total'] += 1
+        n, t = _ROUND_TRIP_STATE['count'], _ROUND_TRIP_STATE['total']
+    try:
+        print(f"{symbol}: [{label}] {BOLD}ROUND TRIP COMPLETE{RESET} — #{n} today "
+              f"({t} this session). Buy + sell (plus any dust sweep) = 1 trade; "
+              f"{qty:.6f} sh closed @ ${price:.2f}.")
+    except Exception:
+        pass
+    logging.info(f"ROUND TRIP COMPLETE [{label}] {symbol}: {qty:.6f} sh @ ${price:.2f} "
+                 f"-- round trip #{n} today, {t} this session.")
+    try:
+        floor_post('BOT', 'observation',
+                   f"{symbol}: round trip #{n} today completed ({qty:.6f} sh @ ${price:.2f})")
+    except Exception:
+        pass
+    return n
+
+
+def round_trips_today():
+    """Completed round trip trades recorded so far on the current ET date."""
+    try:
+        today = datetime.now(eastern).strftime('%Y-%m-%d')
+    except Exception:
+        today = str(date.today())
+    with _ROUND_TRIP_LOCK:
+        if _ROUND_TRIP_STATE['date'] != today:
+            return 0
+        return _ROUND_TRIP_STATE['count']
 
 
 def _run_profit_sweep(sweep_label, step1_type, step1_tif, sell_all=False):
@@ -19915,13 +20148,31 @@ def _sell_stocks_body(lock):
                         logging.error(f"[bull] {symbol}: could not refresh qty after cancel: {e}")
                         continue
                     try:
-                        api.submit_order(
+                        _bull_order = api.submit_order(
                             symbol=symbol, qty=qty, side='sell',
                             type='market', time_in_force='day',
                         )
+                        # Confirm the first sell before sweeping any remainder.
+                        _bt, _bfq, _bfp, _bstatus = _poll_order_terminal(
+                            getattr(_bull_order, 'id', None), DUST_SWEEP_TIMEOUT_SECS
+                        ) if getattr(_bull_order, 'id', None) else (True, qty, None, 'assumed')
+                        if _bfq > 0:
+                            qty = _bfq
+                        if _bfp:
+                            current_price = _bfp
                         print(f"[bull] {now_str}, SOLD {qty:.4f} sh of {symbol} @ ${current_price:.2f} "
                               f"(target {BULL_TAKE_PROFIT_PCT}x hit)")
                         logging.info(f"{now_str} [bull] Sold {qty:.4f} sh of {symbol} @ ${current_price:.2f}")
+
+                        # SECOND SELL ORDER for any sub-$1.00 fractional
+                        # remainder; merged so this stays ONE round trip.
+                        _bdq, _bdp = sweep_residual_dust(symbol, "bull EXIT", now_str,
+                                                         fallback_price=current_price)
+                        if _bdq > 0:
+                            _bp = _bdp if _bdp > 0 else current_price
+                            _btot = qty + _bdq
+                            current_price = ((qty * current_price) + (_bdq * _bp)) / _btot
+                            qty = _btot
                         with open(csv_filename, mode='a', newline='') as f:
                             csv.DictWriter(f, fieldnames=fieldnames).writerow({
                                 'Date': now_str, 'Buy': '', 'Sell': 'Sell',
@@ -20443,6 +20694,24 @@ def _sell_stocks_body(lock):
             print(f"Sold {sold_qty:.4f} sh of {symbol} @ {GREEN}${sold_price:.2f}{RESET}")
             logging.info(f"{now_str} Sold {sold_qty:.4f} sh of {symbol} at {sold_price:.2f}")
 
+            # SECOND SELL ORDER: the first sell is now confirmed filled, so
+            # sweep any sub-$1.00 fractional remainder Alpaca left behind
+            # (qty_available can lag the real position, leaving a sliver that
+            # would otherwise keep this trade open forever). Both fills are
+            # merged into one quantity / one weighted average price, so the
+            # settlement below records exactly ONE round trip trade.
+            dust_qty, dust_price = sweep_residual_dust(symbol, "EXIT", now_str,
+                                                       fallback_price=sold_price)
+            if dust_qty > 0:
+                _px = dust_price if dust_price > 0 else sold_price
+                _total_qty = sold_qty + dust_qty
+                sold_price = ((sold_qty * sold_price) + (dust_qty * _px)) / _total_qty
+                sold_qty = _total_qty
+                print(f"{symbol}: dust sweep merged — exit totals {sold_qty:.6f} sh "
+                      f"@ avg ${sold_price:.4f}, counted as a single round trip.")
+                logging.info(f"{now_str} {symbol}: merged dust {dust_qty:.6f} sh @ "
+                             f"${_px:.4f} into the primary exit (one round trip).")
+
             # ═══ BRAIN SUITE POST-SELL ═══
             try:
                 _yf_sym = symbol.replace('.', '-')  # yfinance style symbol
@@ -20510,10 +20779,21 @@ def _sell_stocks_body(lock):
                 # making the bot forget shares it still owned. Decrement instead,
                 # and only remove the row when the position is actually closed.
                 row = session.query(Position).filter_by(symbols=symbol).one_or_none()
-                if row and (row.quantity - qty) > 1e-6:
+                # A leftover worth less than DUST_MAX_VALUE_USD is NOT a
+                # partial sell -- the dust sweep above either cleared it or
+                # it is too small to matter. Treating it as "still held" is
+                # what used to leave trades permanently open, so the row is
+                # closed and the exit counts as one finished round trip.
+                _left_qty = (row.quantity - qty) if row else 0.0
+                _left_value = _left_qty * (price or 0.0)
+                if row and _left_qty > 1e-6 and _left_value > DUST_MAX_VALUE_USD:
                     row.quantity -= qty
                     print(f"{symbol}: partial sell, {row.quantity:.4f} sh still held.")
                 else:
+                    if row and _left_qty > 1e-6:
+                        print(f"{symbol}: {_left_qty:.6f} sh (~${_left_value:.4f}) of dust "
+                              f"remained on the books — closing the position row anyway; "
+                              f"this exit is one completed round trip.")
                     session.query(Position).filter_by(symbols=symbol).delete()
                     position_book.remove(symbol)
                     # Reset peak tracking so a later re-buy starts a fresh run
@@ -20521,6 +20801,15 @@ def _sell_stocks_body(lock):
                     profit_monitor.clear(symbol)
                     _scale_out_clear(symbol)
                     clear_chandelier_state(symbol)
+
+                    # ONE completed round trip trade: this is the single place
+                    # the position actually goes flat, so the first sell order
+                    # and any following dust sweep are counted here exactly
+                    # once, together.
+                    try:
+                        register_completed_round_trip(symbol, qty, price, label='EXIT')
+                    except Exception as _rt_e:
+                        logging.warning(f"{symbol}: round-trip registration failed: {_rt_e}")
 
                     # REVIEW ITEM #7: fill in the outcome on the most recent
                     # still-open TradeFeatures row for this symbol, so the
