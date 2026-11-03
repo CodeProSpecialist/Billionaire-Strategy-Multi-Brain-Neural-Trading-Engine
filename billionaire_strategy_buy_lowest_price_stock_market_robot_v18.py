@@ -17640,16 +17640,9 @@ WEEKDAY_BIAS_MIN_SAMPLE    = 60        # sessions needed before trusting a weekd
 # Operator rule: a weekday the stats call bearish (currently Tue/Thu/Fri on
 # the numbers above) should still be tradable IF the market has actually
 # proven itself strongly bullish THAT day -- but only in the mid-session
-# window, 11:30 AM to 3:45 PM ET, and only during the months the operator
-# wants to be active on these uncertain days (Nov, May, Jun, Jul -- see
-# STRONG_BULL_OVERRIDE_MONTHS).
-#
-# NOTE on the month list: the big US earnings seasons actually run mid-Jan,
-# mid-Apr, mid-Jul and mid-Oct (the weeks after each quarter ends), so of the
-# four months chosen only July lines up with one. Nov, May and Jun are the
-# tail end of a season or between seasons. The months are configured as the
-# operator asked; if the intent is really "trade these days during earnings
-# season", the set to use would be {1, 4, 7, 10}.
+# window, 11:30 AM to 3:45 PM ET, and only inside the seasonal date ranges
+# the operator wants to be active on these uncertain days (Apr 15-Jul 31,
+# all of November, and Dec 1-14 -- see STRONG_BULL_OVERRIDE_WINDOWS).
 #
 # Why that window: before 11:30 the day has not shown its hand (the open is
 # noisy and a strong morning reverses often enough that an 11:30 read is the
@@ -17676,11 +17669,21 @@ WEEKDAY_BIAS_MIN_SAMPLE    = 60        # sessions needed before trusting a weekd
 # STRONG_BULL_OVERRIDE_MODE='shadow' to log what it WOULD have allowed
 # without actually unblocking those entries.
 STRONG_BULL_OVERRIDE_MODE     = 'armed'   # 'armed' | 'shadow' | 'off'
-# Operator rule: only take these uncertain weekdays during the months he
-# wants to be active in -- November, May, June and July. Outside those four
-# months a bearish weekday stays blocked no matter how strong the tape looks.
-# Set to None (or an empty set) to allow the override in every month.
-STRONG_BULL_OVERRIDE_MONTHS   = {11, 5, 6, 7}
+# Operator rule: only take these uncertain weekdays inside his chosen
+# seasonal windows. Outside them a bearish weekday stays blocked no matter
+# how strong the tape looks.
+#
+#   Apr 15 - Jul 31   ("mid April through July 31"; mid-April read as the 15th)
+#   Nov  1 - Nov 30   (all of November)
+#   Dec  1 - Dec 14   (first two weeks only -- deliberately NOT all of December)
+#
+# Each entry is ((start_month, start_day), (end_month, end_day)), inclusive
+# on both ends. Ranges are compared on month/day only, so they repeat every
+# year with no maintenance. Set to None (or an empty list) to allow the
+# override year-round.
+STRONG_BULL_OVERRIDE_WINDOWS  = [((4, 15), (7, 31)),
+                                 ((11, 1), (11, 30)),
+                                 ((12, 1), (12, 14))]
 _MONTH_ABBR = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 STRONG_BULL_WINDOW_START      = (11, 30)  # ET -- earliest honest read on the day
@@ -17703,17 +17706,36 @@ def _in_strong_bull_window(now_et=None):
     return start <= now_et.time() <= end
 
 
-def _in_strong_bull_month(now_et=None):
+def _format_season_windows(windows):
+    """'Apr 15-Jul 31, Nov 1-Nov 30, Dec 1-Dec 14' for log/reason text."""
+    parts = []
+    for (sm, sd), (em, ed) in windows:
+        parts.append(f'{_MONTH_ABBR[sm]} {sd}-{_MONTH_ABBR[em]} {ed}')
+    return ', '.join(parts)
+
+
+def _in_strong_bull_season(now_et=None):
     """
-    (allowed, label) -- is the current month one of the months the override is
-    permitted in? Empty/None month set means every month is allowed.
+    (allowed, label) -- is today inside one of the seasonal windows the
+    override is permitted in? Compared on month/day only, so the windows
+    repeat every year. A window whose end falls before its start (e.g.
+    Dec 1 - Jan 15) is treated as wrapping across the new year. An empty or
+    None window list means every date is allowed.
     """
-    months = STRONG_BULL_OVERRIDE_MONTHS
-    if not months:
-        return True, 'all months'
+    windows = STRONG_BULL_OVERRIDE_WINDOWS
+    if not windows:
+        return True, 'all year'
     now_et = now_et or datetime.now(eastern)
-    label = ', '.join(_MONTH_ABBR[m] for m in sorted(months))
-    return (now_et.month in months), label
+    today = (now_et.month, now_et.day)
+    label = _format_season_windows(windows)
+    for start, end in windows:
+        if start <= end:
+            if start <= today <= end:
+                return True, label
+        else:  # wraps past Dec 31
+            if today >= start or today <= end:
+                return True, label
+    return False, label
 
 
 def check_strong_bull_day(now_et=None, force=False):
@@ -17854,12 +17876,12 @@ def check_weekday_bias_gate(now_et=None):
         # --- strong-bull override on an otherwise-blocked weekday ---
         if STRONG_BULL_OVERRIDE_MODE != 'off':
             in_window = _in_strong_bull_window(now_et)
-            month_ok, month_label = _in_strong_bull_month(now_et)
+            season_ok, season_label = _in_strong_bull_season(now_et)
             w0 = f'{STRONG_BULL_WINDOW_START[0]:02d}:{STRONG_BULL_WINDOW_START[1]:02d}'
             w1 = f'{STRONG_BULL_WINDOW_END[0]:02d}:{STRONG_BULL_WINDOW_END[1]:02d}'
-            if not month_ok:
-                reason = (f'{reason}; strong-bull override only runs in '
-                          f'{month_label}')
+            if not season_ok:
+                reason = (f'{reason}; strong-bull override only runs '
+                          f'{season_label}')
                 in_window = False
             if in_window:
                 strong, strong_reason, _sinfo = check_strong_bull_day(now_et)
@@ -17873,7 +17895,7 @@ def check_weekday_bias_gate(now_et=None):
                     return True, msg
                 reason = (f'{reason}; inside the {w0}-{w1} ET override window but '
                           f'{strong_reason}')
-            elif month_ok:
+            elif season_ok:
                 reason = (f'{reason}; strong-bull override only applies '
                           f'{w0}-{w1} ET')
 
