@@ -3215,7 +3215,7 @@ class _BrainComms:
 BRAIN_COMMS = _BrainComms()
 
 
-# ---------------- Trading Floor: chatter log + counters ------------------------
+# ------------- Brain Room — Trading Floor: chatter log + counters --------------
 class _TradingFloor:
     """Rolling log of brain chatter for the dashboard terminal.
     Kalshi-style: distinguishes instructions / lessons / observations / training."""
@@ -4574,17 +4574,17 @@ try:
             _bot_oe = _BotOrderEngine()
             if hasattr(TRADING_FLOOR, 'set_order_engine'):
                 TRADING_FLOOR.set_order_engine(_bot_oe)
-                print("[merge] KSB trading floor: order_engine wired "
+                print("[merge] KSB Brain Room — Trading Floor: order_engine wired "
                       "(place_buy/place_sell → Alpaca api.submit_order)",
                       flush=True)
             else:
                 # Older KSB — attach as attribute so _cmd_buy sees it.
                 TRADING_FLOOR._order_engine = _bot_oe
-                print("[merge] KSB trading floor: order_engine attached "
+                print("[merge] KSB Brain Room — Trading Floor: order_engine attached "
                       "via _order_engine (no set_order_engine method)",
                       flush=True)
         except Exception as _oe:
-            print(f"[merge] KSB trading floor: order_engine wire failed: {_oe}",
+            print(f"[merge] KSB Brain Room — Trading Floor: order_engine wire failed: {_oe}",
                   flush=True)
     _ksb_shim()
 except ImportError as _e:
@@ -7405,7 +7405,8 @@ BLACKLIST = BlacklistManager()
 
 
 # ============================================================================
-# BRAIN TRADING FLOOR — inter-brain message feed + operator terminal
+# BRAIN ROOM — TRADING FLOOR: inter-brain message feed + operator terminal
+# (dashboard panel title: 'Brain Room — Trading Floor')
 # ============================================================================
 # Ring buffer of typed messages the brains and safety layer publish to a
 # shared "trading floor" feed. Mirrors Kalshi's brainFeed pattern: every
@@ -7425,7 +7426,7 @@ _floor_counts = {'instructions': 0, 'lessons': 0, 'observations': 0, 'training':
 
 
 def floor_post(from_name, msg_type, detail):
-    """Publish a message to the Brain Trading Floor. Non-blocking, safe from
+    """Publish a message to the Brain Room — Trading Floor panel. Non-blocking, safe from
     any thread. `msg_type` is one of: instruction, lesson, observation,
     training, alert, discuss, block, approve, learn, info.
     """
@@ -9371,7 +9372,7 @@ def get_brain_f_status():
 # ============================================================================
 # The Chair is the SINGLE POINT OF DECISION for every trade. It:
 #   1. Queries every other brain for its verdict on this candidate
-#   2. Posts each brain's verdict to the Brain Trading Floor
+#   2. Posts each brain's verdict to the Brain Room — Trading Floor
 #   3. Applies deterministic aggregation rules (documented below)
 #   4. Posts its own final decision to the floor
 #   5. Returns the decision (approve/deny + adjusted notional) to buy_stocks
@@ -9502,7 +9503,7 @@ def _brains_still_training():
         return False
 
 def _floor_notice_brains_training(symbol):
-    """Post a throttled notice to the brain trading floor explaining that
+    """Post a throttled notice to the Brain Room — Trading Floor explaining that
     trades are being decided by technical indicators while the brains
     finish training."""
     global _BRAINS_TRAINING_NOTICE_TS
@@ -9592,7 +9593,7 @@ def chair_decide(symbol, notional_requested, current_regime=None,
                 "votes": [], "multiplier": 1.0}
     # While brains are still training, bypass the KSB gate entirely and
     # rely on the technical-indicator strategy score for the buy decision.
-    # Post a throttled notice to the brain trading floor so operators see
+    # Post a throttled notice to the Brain Room — Trading Floor so operators see
     # that trades are being decided by TA, not by the (still-training) brains.
     if _brains_still_training():
         _floor_notice_brains_training(symbol)
@@ -19177,7 +19178,7 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
 
             # ---------------- Chair (Brain E) — final trade decision ----
             # Gathers votes from Trading_A / Backtest_C / Risk_B / Portfolio_D,
-            # posts each vote to the Brain Trading Floor, applies deterministic
+            # posts each vote to the Brain Room — Trading Floor, applies deterministic
             # aggregation rules, and returns approve/deny + adjusted notional.
             try:
                 # Compute the REAL strategy score (was previously defaulted
@@ -19922,7 +19923,7 @@ def _chandelier_effective_atr_mult():
 
     BUGFIX: _ChandelierBrain existed solely to tune this number — it records
     every exit reason, computes `recommended_mult` from the rolling hard-stop
-    rate, and even posts "chandelier ATR mult 2.0 -> 2.2" to the trading floor
+    rate, and even posts "chandelier ATR mult 2.0 -> 2.2" to the Brain Room
     — but nothing ever read get_mult(). _chandelier_stop_price used the static
     CHANDELIER_ATR_MULT global, so the brain has been learning into a vacuum
     and the floor messages described an adjustment that never happened.
@@ -21267,7 +21268,7 @@ def _sell_stocks_body(lock):
                                     print(f"[KSB settle] {symbol}: {_e}")
                             # ═══ end KSB settle ═══
                             brain_trust_settle_symbol(symbol, won)
-                            # ═══ V18: narrate the exit on the trading floor
+                            # ═══ V18: narrate the exit on the Trade Decision Transcript
                             # and append a labelled sample to the rolling
                             # retrain window so tonight's head learns from
                             # today's actual fills. Both are best-effort.
@@ -22260,7 +22261,7 @@ class DashboardWSEngine:
                 BLACKLIST._save()
             floor_post('USER', 'instruction', "all 72h auto-blacklist entries cleared")
 
-        # ---- Brain Trading Floor commands ----
+        # ---- Brain Room — Trading Floor commands ----
         elif cmd == 'floor_clear':
             floor_clear()
             floor_post('USER', 'instruction', 'floor cleared')
@@ -22288,7 +22289,7 @@ class DashboardWSEngine:
             try: KSB.TRADING_FLOOR.on_user_message(text)
             except Exception as _e: print(f"[KSB floor cmd] {_e}")
         # ═══ end KSB forward ═══
-        """User-typed commands from the Brain Trading Floor input box.
+        """User-typed commands from the Brain Room — Trading Floor input box.
         Very small command grammar; mostly a way to inject blacklist ops
         and sanity queries without leaving the dashboard.
         """
@@ -22377,7 +22378,7 @@ class DashboardWSEngine:
         global V18_TIMING_MODE, V18_TIMING_ENABLED, V18_FLOOR_ENABLED
         global V18_FLOOR_VERBOSE, V18_MIN_CONF
         try:
-            # ── V18 timing brain / brain room knobs ──────────────────────
+            # ── V18 timing brain / transcript knobs ──────────────────────
             if key == 'v18_timing_mode':
                 _m = str(value).strip().lower()
                 if _m in ('off', 'shadow', 'armed'):
@@ -22954,7 +22955,7 @@ class DashboardWSEngine:
         except Exception as e:
             state['blacklist'] = {'error': str(e)}
 
-        # Brain Trading Floor feed
+        # Brain Room — Trading Floor feed
         try:
             state['floor'] = floor_snapshot(max_msgs=100)
         except Exception as e:
@@ -24007,7 +24008,8 @@ else:
 
 
 # =================================================================================
-# V18 — FROZEN-FOUNDATION TIMING BRAIN + BRAIN ROOM TRADING FLOOR
+# V18 — FROZEN-FOUNDATION TIMING BRAIN + TRADE DECISION TRANSCRIPT
+# (dashboard panel title: 'Trade Decision Transcript')
 # =================================================================================
 # Three parts, in order:
 #   (a) timing_brain  — a frozen 112-dim market foundation (daily / 5m / 1m /
@@ -24015,7 +24017,8 @@ else:
 #       feeding a ~10k-param trainable head that emits calibrated
 #       buy/hold/sell, plus the rolling 60-90 day 24h retrainer with
 #       automatic rollback, and the HARD risk-constraint layer.
-#   (b) brain_room    — the trading-floor conversation engine. Observe-only:
+#   (b) brain_room    — the Trade Decision Transcript engine (desk debate).
+#                       Observe-only:
 #       it cannot place, size or block a trade.
 #   (c) bridge        — translates this bot's live state into model inputs and
 #       exposes one downgrade-only, fail-open gate: v18_timing_gate().
@@ -25754,7 +25757,7 @@ def v18_timing_bootstrap(start_scheduler: bool = True, tz=None) -> bool:
 
 
 
-# ── (b) brain room ────────────────────────────────────────────────────────
+# ── (b) trade decision transcript (desk debate) ───────────────────────────
 import json
 import os
 import random
@@ -26340,7 +26343,8 @@ def narrated_decide(brain, inputs, risk_state, requested_notional: float,
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  V18 BRIDGE — connects the frozen-foundation TimingBrain and the Brain Room
+#  V18 BRIDGE — connects the frozen-foundation TimingBrain and the Trade
+#  Decision Transcript
 #  to the existing bot. Everything here is DOWNGRADE-ONLY and FAIL-OPEN:
 #  if any part of it errors, the legacy decision stands unchanged.
 # ═══════════════════════════════════════════════════════════════════════════
@@ -26648,7 +26652,7 @@ def _v18_sector_counts():
 def v18_timing_gate(symbol, notional_requested, current_price=None,
                     atr_per_share=None, regime=None, vix=None):
     """Consult the frozen-foundation TimingBrain, run the hard risk
-    constraints, narrate the whole thing on the trading floor, and return
+    constraints, narrate the whole thing on the Trade Decision Transcript, and return
 
         {'approved': bool, 'notional': float, 'reason': str,
          'probs': [p_sell, p_hold, p_buy], 'attribution': {...},
@@ -26743,7 +26747,7 @@ def v18_record_outcome(symbol, entry_price, exit_price, entry_ts, label_hint=Non
 
 
 def v18_boot():
-    """Load the frozen foundation + head, open the trading floor, and start
+    """Load the frozen foundation + head, open the Trade Decision Transcript, and start
     the 24h head-retrain scheduler. Safe to call once from main()."""
     global V18_TIMING_READY, _V18_EQUITY_OPEN
     if not V18_TIMING_ENABLED:
