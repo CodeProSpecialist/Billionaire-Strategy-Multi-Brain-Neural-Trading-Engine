@@ -13924,11 +13924,11 @@ def afterhours_in_study_window(now_et=None):
         wd = now_et.weekday()
         t = now_et.time()
         if wd == 4 and t >= AFTERHOURS_STUDY_STOP_FRI_ET:
-            return False, ('Friday after 4:00 PM ET — weekend blackout, study '
-                           'resumes Saturday 10:00 PM ET')
+            return False, ('Taking a break today — Friday after 4:00 PM ET; '
+                           'the brains are back on the tape Saturday 10:00 PM ET')
         if wd == 5 and t < AFTERHOURS_STUDY_RESUME_SAT_ET:
-            return False, ('Saturday before 10:00 PM ET — weekend blackout, '
-                           'study resumes at 10:00 PM ET')
+            return False, ('Taking a break today — Saturday until 10:00 PM ET; '
+                           'the brains are back on the tape at 10:00 PM ET')
         return True, 'inside study window'
     except Exception:
         # Fail OPEN: a clock error should not silence the brains for a week.
@@ -14095,8 +14095,8 @@ def run_afterhours_market_study(force=False):
             else:
                 say_it = False
         if say_it:
-            print(f"{DIM}[afterhours] study paused: {window_reason}.{RESET}")
-            logging.info(f"[afterhours] study paused: {window_reason}")
+            print(f"{DIM}[afterhours] {window_reason}.{RESET}")
+            logging.info(f"[afterhours] {window_reason}")
         return None
     now_ts = time.time()
     with _afterhours_lock:
