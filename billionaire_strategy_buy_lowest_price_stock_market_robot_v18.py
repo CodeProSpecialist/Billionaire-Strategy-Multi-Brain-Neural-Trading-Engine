@@ -13853,6 +13853,463 @@ def run_close_profit_sweep():
         v18_close_floor_session()
     except Exception:
         pass
+# =====================================================================
+# AFTER-HOURS MARKET STUDY  (brains keep studying while the market is shut)
+# =====================================================================
+#
+# WHY THIS EXISTS
+#   The robot used to go completely silent the moment the closing bell rang:
+#   stop_if_stock_market_is_closed() just printed a banner and slept 60s in a
+#   loop until the next open. The brains learned nothing overnight, over the
+#   weekend, or on holidays.
+#
+#   This module runs a READ-ONLY study pass on a timer while the market is
+#   closed. It ranks the tradable universe by momentum (MACD / RSI / returns /
+#   volume / trend structure), asks Brain F (the bullish-trend picker) for
+#   P(bullish) on the leaders and the laggards, narrates what it sees through
+#   the Brain Room floor so the operator and the dashboard both see the brains
+#   thinking, and writes every observation to a journal on disk.
+#
+#   The next time it runs it GRADES the previous journal entry against what
+#   actually happened to those names, so the study loop is not just chatter --
+#   it accumulates a scored track record of its own after-hours calls.
+#
+# HARD SAFETY RULE
+#   Nothing in this module can place, size, cancel or veto an order. It calls
+#   no trading function. Every study cycle prints and logs an explicit
+#   "MARKET CLOSED -- STUDY ONLY, NO ORDERS" line so there is never any
+#   ambiguity about what mode the robot is in. Buying and selling remain gated
+#   exactly where they always were: behind stop_if_stock_market_is_closed()
+#   returning, which only happens inside real NYSE session hours.
+
+AFTERHOURS_STUDY_ENABLED = True          # master switch
+AFTERHOURS_STUDY_INTERVAL_SECONDS = 900  # one study pass every 15 minutes
+AFTERHOURS_STUDY_MAX_SYMBOLS = 30        # how many names to study per pass
+AFTERHOURS_STUDY_TOP_N = 5               # how many leaders/laggards to narrate
+AFTERHOURS_STUDY_LOOKBACK_DAYS = 120     # daily bars pulled per symbol
+AFTERHOURS_STUDY_BRAIN_F_NAMES = 8       # Brain F inferences per pass (cost cap)
+AFTERHOURS_STUDY_JOURNAL = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'afterhours_study_journal.jsonl')
+AFTERHOURS_STUDY_JOURNAL_MAX_LINES = 2000
+
+_afterhours_state = {
+    'last_run': 0.0,
+    'cycles': 0,
+    'last_report': None,     # dict, published to the dashboard
+    'graded': 0,
+    'grade_hits': 0,
+    'last_blackout_note': 0.0,
+}
+_afterhours_lock = threading.Lock()
+
+# Weekly blackout. The operator does not want the study session running into
+# the weekend dead zone: it stops Friday at 4:00 PM ET and stays off all of
+# Saturday until 10:00 PM ET. Expressed as the ALLOWED window, the study runs
+# from Saturday 10:00 PM ET through Friday 4:00 PM ET, and at no other time.
+AFTERHOURS_STUDY_WINDOW_ENABLED = True
+AFTERHOURS_STUDY_STOP_FRI_ET = _dt_time(16, 0)   # Friday 4:00 PM ET -> off
+AFTERHOURS_STUDY_RESUME_SAT_ET = _dt_time(22, 0) # Saturday 10:00 PM ET -> on
+
+
+def afterhours_in_study_window(now_et=None):
+    """(allow, reason) -- is the after-hours study allowed to run right now?
+
+    Blackout is the contiguous stretch from Friday 16:00 ET to Saturday
+    22:00 ET. Everything else is inside the window. weekday(): Mon=0 ... Fri=4,
+    Sat=5, Sun=6."""
+    if not AFTERHOURS_STUDY_WINDOW_ENABLED:
+        return True, 'window check disabled'
+    try:
+        now_et = now_et or datetime.now(eastern)
+        wd = now_et.weekday()
+        t = now_et.time()
+        if wd == 4 and t >= AFTERHOURS_STUDY_STOP_FRI_ET:
+            return False, ('Friday after 4:00 PM ET — weekend blackout, study '
+                           'resumes Saturday 10:00 PM ET')
+        if wd == 5 and t < AFTERHOURS_STUDY_RESUME_SAT_ET:
+            return False, ('Saturday before 10:00 PM ET — weekend blackout, '
+                           'study resumes at 10:00 PM ET')
+        return True, 'inside study window'
+    except Exception:
+        # Fail OPEN: a clock error should not silence the brains for a week.
+        return True, 'window check error — allowing'
+
+
+
+def _afterhours_universe():
+    """Symbols to study. Prefers the live trading universe so the brains study
+    what they are actually allowed to buy; falls back to today's scanner
+    watchlist, then to the ML pretraining universe."""
+    try:
+        if UNIVERSE_NASDAQ_TECH_ONLY and _NASDAQ_TECH_UNIVERSE:
+            return list(_NASDAQ_TECH_UNIVERSE)[:AFTERHOURS_STUDY_MAX_SYMBOLS]
+    except Exception:
+        pass
+    try:
+        wl = get_symbols_to_buy() or []
+        if wl:
+            return list(wl)[:AFTERHOURS_STUDY_MAX_SYMBOLS]
+    except Exception:
+        pass
+    try:
+        return list(_ml_hist_fetch_symbol_universe())[:AFTERHOURS_STUDY_MAX_SYMBOLS]
+    except Exception:
+        return []
+
+
+def _afterhours_measure(symbol, df):
+    """Momentum / trend measurements for one symbol from its daily bars.
+    Returns a dict, or None when the frame is unusable. Pure math, no I/O."""
+    try:
+        d = df.dropna(subset=['Close']).copy()
+        if len(d) < 60:
+            return None
+        close = d['Close'].astype(float).values
+        vol = d['Volume'].astype(float).values if 'Volume' in d.columns else np.zeros(len(close))
+        last = float(close[-1])
+        if last <= 0:
+            return None
+
+        rsi = float(talib.RSI(close, timeperiod=14)[-1])
+        macd, macd_sig, macd_hist = talib.MACD(close, 12, 26, 9)
+        m, ms, mh = float(macd[-1]), float(macd_sig[-1]), float(macd_hist[-1])
+        mh_prev = float(macd_hist[-2])
+        sma20 = float(talib.SMA(close, 20)[-1])
+        sma50 = float(talib.SMA(close, 50)[-1])
+
+        ret_1d = (last / float(close[-2]) - 1.0) if len(close) > 1 else 0.0
+        ret_5d = (last / float(close[-6]) - 1.0) if len(close) > 6 else 0.0
+        ret_20d = (last / float(close[-21]) - 1.0) if len(close) > 21 else 0.0
+        vol_ratio = (float(vol[-1]) / max(1.0, float(np.mean(vol[-20:])))) if len(vol) >= 20 else 1.0
+
+        # Composite momentum score, roughly -100 .. +100. Weighted toward the
+        # 20-day trend because that is the horizon the buy path cares about.
+        score = 0.0
+        score += 40.0 * float(np.clip(ret_20d / 0.10, -1.0, 1.0))
+        score += 25.0 * float(np.clip(ret_5d / 0.05, -1.0, 1.0))
+        score += 15.0 * (1.0 if (m > ms) else -1.0)
+        score += 10.0 * float(np.clip((rsi - 50.0) / 25.0, -1.0, 1.0))
+        score += 10.0 * (1.0 if (last > sma20 > sma50) else (-1.0 if last < sma20 < sma50 else 0.0))
+
+        if score >= 35:
+            label = 'strongly bullish'
+        elif score >= 12:
+            label = 'bullish'
+        elif score <= -35:
+            label = 'strongly bearish'
+        elif score <= -12:
+            label = 'bearish'
+        else:
+            label = 'sideways'
+
+        return {
+            'symbol': symbol, 'price': last, 'rsi': rsi,
+            'macd': m, 'macd_signal': ms, 'macd_hist': mh,
+            'macd_hist_rising': bool(mh > mh_prev),
+            'sma20': sma20, 'sma50': sma50,
+            'ret_1d': ret_1d, 'ret_5d': ret_5d, 'ret_20d': ret_20d,
+            'vol_ratio': vol_ratio, 'score': score, 'label': label,
+        }
+    except Exception:
+        return None
+
+
+def _afterhours_journal_append(entry):
+    """Append one study record. Trimmed so it can run for years unattended."""
+    try:
+        with open(AFTERHOURS_STUDY_JOURNAL, 'a') as f:
+            f.write(json.dumps(entry) + '\n')
+        with open(AFTERHOURS_STUDY_JOURNAL, 'r') as f:
+            lines = f.readlines()
+        if len(lines) > AFTERHOURS_STUDY_JOURNAL_MAX_LINES:
+            with open(AFTERHOURS_STUDY_JOURNAL, 'w') as f:
+                f.writelines(lines[-AFTERHOURS_STUDY_JOURNAL_MAX_LINES:])
+    except Exception as e:
+        logging.warning(f"[afterhours] journal write failed: {e}")
+
+
+def _afterhours_last_journal_entry():
+    try:
+        if not os.path.exists(AFTERHOURS_STUDY_JOURNAL):
+            return None
+        with open(AFTERHOURS_STUDY_JOURNAL, 'r') as f:
+            lines = [ln for ln in f.readlines() if ln.strip()]
+        if not lines:
+            return None
+        return json.loads(lines[-1])
+    except Exception:
+        return None
+
+
+def _afterhours_grade_previous(prev, measured_by_symbol):
+    """Score the previous pass's bullish/bearish reads against what the tape
+    actually did since then. This is the 'learning' half of the study loop:
+    the brains find out whether last night's opinion survived contact with the
+    market. Observation only -- it changes no live parameter."""
+    if not prev:
+        return None
+    try:
+        prev_leaders = {r['symbol']: r for r in prev.get('leaders', [])}
+        prev_laggards = {r['symbol']: r for r in prev.get('laggards', [])}
+        hits = 0
+        total = 0
+        detail = []
+        for sym, rec in list(prev_leaders.items()) + list(prev_laggards.items()):
+            now = measured_by_symbol.get(sym)
+            if not now:
+                continue
+            then_price = float(rec.get('price') or 0.0)
+            if then_price <= 0:
+                continue
+            chg = now['price'] / then_price - 1.0
+            if abs(chg) < 0.0005:
+                continue   # unchanged tape teaches nothing
+            expected_up = sym in prev_leaders
+            correct = (chg > 0) == expected_up
+            total += 1
+            hits += 1 if correct else 0
+            detail.append({'symbol': sym, 'expected': 'up' if expected_up else 'down',
+                           'change_pct': chg * 100.0, 'correct': correct})
+        if total == 0:
+            return None
+        return {'graded': total, 'correct': hits,
+                'accuracy_pct': hits / total * 100.0, 'detail': detail}
+    except Exception:
+        return None
+
+
+def run_afterhours_market_study(force=False):
+    """One after-hours study pass. Safe to call on every tick of the closed-
+    market wait loop -- it self-throttles to AFTERHOURS_STUDY_INTERVAL_SECONDS.
+    Never raises, never trades."""
+    if not AFTERHOURS_STUDY_ENABLED:
+        return None
+    allowed, window_reason = afterhours_in_study_window()
+    if not allowed:
+        # Print at most once per interval so the 60s wait loop doesn't spam.
+        with _afterhours_lock:
+            quiet = (time.time() - _afterhours_state.get('last_blackout_note', 0.0))
+            if quiet >= AFTERHOURS_STUDY_INTERVAL_SECONDS:
+                _afterhours_state['last_blackout_note'] = time.time()
+                say_it = True
+            else:
+                say_it = False
+        if say_it:
+            print(f"{DIM}[afterhours] study paused: {window_reason}.{RESET}")
+            logging.info(f"[afterhours] study paused: {window_reason}")
+        return None
+    now_ts = time.time()
+    with _afterhours_lock:
+        if not force and (now_ts - _afterhours_state['last_run']) < AFTERHOURS_STUDY_INTERVAL_SECONDS:
+            return None
+        _afterhours_state['last_run'] = now_ts
+
+    try:
+        et_now = datetime.now(eastern)
+        symbols = _afterhours_universe()
+        if not symbols:
+            return None
+
+        print(f"\n{BOLD}── AFTER-HOURS STUDY SESSION ─────────────────────────────{RESET}")
+        print(f"{DIM}MARKET CLOSED — STUDY ONLY. The brains are reading the tape "
+              f"and learning; NO ORDERS will be placed until the opening bell.{RESET}")
+        floor_post('BOT', 'info',
+                   'Market closed — after-hours study session. Observation and '
+                   'learning only; no orders until the market reopens.')
+        try:
+            FLOOR.say('FLOOR', f"Bell's rung, books are flat for the session. "
+                               f"We stay on the tape anyway — {len(symbols)} names "
+                               f"up for review. Nothing gets bought tonight; this is "
+                               f"homework for the open.")
+        except Exception:
+            pass
+
+        # ---- pull daily bars for the whole study list in one batched call ----
+        frames = yf_download_batch(symbols, period=f'{AFTERHOURS_STUDY_LOOKBACK_DAYS}d')
+        measured = {}
+        for sym in symbols:
+            df = frames.get(sym)
+            if df is None or getattr(df, 'empty', True):
+                continue
+            m = _afterhours_measure(sym, df)
+            if m:
+                measured[sym] = m
+        if not measured:
+            print(f"{DIM}[afterhours] no usable data this pass; will retry next interval.{RESET}")
+            return None
+
+        ranked = sorted(measured.values(), key=lambda r: -r['score'])
+        leaders = ranked[:AFTERHOURS_STUDY_TOP_N]
+        laggards = ranked[-AFTERHOURS_STUDY_TOP_N:][::-1]
+
+        # ---- grade the previous pass before overwriting the journal ----
+        grade = _afterhours_grade_previous(_afterhours_last_journal_entry(), measured)
+        if grade:
+            with _afterhours_lock:
+                _afterhours_state['graded'] += grade['graded']
+                _afterhours_state['grade_hits'] += grade['correct']
+            acc_color = GREEN if grade['accuracy_pct'] >= 50 else RED
+            print(f"{DIM}[afterhours] grading last study pass:{RESET} "
+                  f"{acc_color}{grade['correct']}/{grade['graded']} directionally correct "
+                  f"({grade['accuracy_pct']:.0f}%){RESET}")
+            try:
+                FLOOR.say('QUANT', f"Marking last session's homework: {grade['correct']} of "
+                                   f"{grade['graded']} directional reads held up "
+                                   f"({grade['accuracy_pct']:.0f}%). Lifetime after-hours "
+                                   f"accuracy now "
+                                   f"{_afterhours_state['grade_hits']}/{_afterhours_state['graded']}.")
+            except Exception:
+                pass
+            floor_post('QUANT', 'lesson',
+                       f"After-hours study grade: {grade['correct']}/{grade['graded']} "
+                       f"({grade['accuracy_pct']:.0f}%) directionally correct since last pass.")
+
+        # ---- regime context ----
+        try:
+            regime = str(get_market_regime())
+        except Exception:
+            regime = 'unknown'
+        advancing = sum(1 for r in measured.values() if r['ret_1d'] > 0)
+        breadth = advancing / max(1, len(measured)) * 100.0
+        bullish_n = sum(1 for r in measured.values() if r['score'] >= 12)
+        bearish_n = sum(1 for r in measured.values() if r['score'] <= -12)
+        print(f"{DIM}[afterhours] regime={regime} | breadth {advancing}/{len(measured)} "
+              f"advancing ({breadth:.0f}%) | {bullish_n} bullish, {bearish_n} bearish, "
+              f"{len(measured) - bullish_n - bearish_n} sideways{RESET}")
+        try:
+            FLOOR.say('REGIME', f"Last-print regime reads {regime}. Breadth {breadth:.0f}% "
+                                f"advancing across the study list — {bullish_n} names in a "
+                                f"bullish momentum state, {bearish_n} bearish, the rest chopping. "
+                                f"That is the backdrop we carry into the next open.")
+        except Exception:
+            pass
+        floor_post('REGIME', 'observation',
+                   f"After-hours: regime {regime}, breadth {breadth:.0f}% advancing, "
+                   f"{bullish_n} bullish / {bearish_n} bearish names.")
+
+        # ---- narrate the leaders, with Brain F's read on each ----
+        print(f"\n{DIM}  Gaining bullish momentum:{RESET}")
+        brain_f_budget = AFTERHOURS_STUDY_BRAIN_F_NAMES
+        for r in leaders:
+            p_bull = None
+            if brain_f_budget > 0:
+                try:
+                    p_bull = brain_f_score_symbol(r['symbol'], frames.get(r['symbol']),
+                                                  current_price=r['price'])
+                    brain_f_budget -= 1
+                except Exception:
+                    p_bull = None
+            r['brain_f_p_bullish'] = p_bull
+            pf = f"  BrainF P(bullish)={p_bull:.3f}" if p_bull is not None else ""
+            print(f"   {GREEN}{r['symbol']:<6}{RESET} {r['label']:<17} "
+                  f"score {r['score']:+6.1f}  20d {r['ret_20d']*100:+6.2f}%  "
+                  f"5d {r['ret_5d']*100:+6.2f}%  RSI {r['rsi']:5.1f}  "
+                  f"MACD {'>' if r['macd'] > r['macd_signal'] else '<'} signal"
+                  f"{pf}")
+            try:
+                FLOOR.say('TIMING', symbol=r['symbol'], text=(
+                    f"{r['symbol']} is {r['label']} — up {r['ret_20d']*100:.1f}% over twenty "
+                    f"sessions, {r['ret_5d']*100:+.1f}% over five, RSI {r['rsi']:.0f}, MACD "
+                    f"{'above' if r['macd'] > r['macd_signal'] else 'below'} its signal and the "
+                    f"histogram {'expanding' if r['macd_hist_rising'] else 'contracting'}"
+                    + (f". Brain F puts P(bullish) at {p_bull:.2f}." if p_bull is not None else ".")
+                    + " Watch-list for the open, not a trade tonight."))
+            except Exception:
+                pass
+            floor_post('TIMING', 'observation',
+                       f"[closed] {r['symbol']} {r['label']}: 20d {r['ret_20d']*100:+.1f}%, "
+                       f"RSI {r['rsi']:.0f}, score {r['score']:+.1f}"
+                       + (f", BrainF {p_bull:.2f}" if p_bull is not None else ""))
+
+        # ---- narrate the laggards ----
+        print(f"\n{DIM}  Losing momentum / bearish:{RESET}")
+        for r in laggards:
+            p_bull = None
+            if brain_f_budget > 0:
+                try:
+                    p_bull = brain_f_score_symbol(r['symbol'], frames.get(r['symbol']),
+                                                  current_price=r['price'])
+                    brain_f_budget -= 1
+                except Exception:
+                    p_bull = None
+            r['brain_f_p_bullish'] = p_bull
+            pf = f"  BrainF P(bullish)={p_bull:.3f}" if p_bull is not None else ""
+            print(f"   {RED}{r['symbol']:<6}{RESET} {r['label']:<17} "
+                  f"score {r['score']:+6.1f}  20d {r['ret_20d']*100:+6.2f}%  "
+                  f"5d {r['ret_5d']*100:+6.2f}%  RSI {r['rsi']:5.1f}  "
+                  f"MACD {'>' if r['macd'] > r['macd_signal'] else '<'} signal"
+                  f"{pf}")
+            try:
+                FLOOR.say('RISK', symbol=r['symbol'], text=(
+                    f"{r['symbol']} is {r['label']} — {r['ret_20d']*100:+.1f}% on the month, "
+                    f"RSI {r['rsi']:.0f}. If it shows up as a dip candidate at the open I want "
+                    f"the trend check to earn it, not the oversold reading alone."))
+            except Exception:
+                pass
+            floor_post('RISK', 'observation',
+                       f"[closed] {r['symbol']} {r['label']}: 20d {r['ret_20d']*100:+.1f}%, "
+                       f"RSI {r['rsi']:.0f}, score {r['score']:+.1f}")
+
+        # ---- the standing reminder, every single pass ----
+        print(f"\n{DIM}  Reminder: the market is CLOSED. Everything above is study and "
+              f"learning. The robot will not submit a single order until the NYSE "
+              f"session reopens.{RESET}")
+        print(f"{BOLD}──────────────────────────────────────────────────────────{RESET}\n")
+        try:
+            FLOOR.say('FLOOR', "That's the board. Nobody touches the order ticket until "
+                               "the opening bell — we trade the session, we study the gap.")
+        except Exception:
+            pass
+
+        report = {
+            'ts': now_ts,
+            'et': et_now.strftime('%Y-%m-%d %H:%M:%S %Z'),
+            'regime': regime,
+            'studied': len(measured),
+            'breadth_pct': breadth,
+            'bullish_count': bullish_n,
+            'bearish_count': bearish_n,
+            'leaders': leaders,
+            'laggards': laggards,
+            'grade': grade,
+            'market_open': False,
+            'note': 'study only — no orders placed while the market is closed',
+        }
+        with _afterhours_lock:
+            _afterhours_state['cycles'] += 1
+            _afterhours_state['last_report'] = report
+        _afterhours_journal_append(report)
+        logging.info(f"[afterhours] study pass #{_afterhours_state['cycles']}: "
+                     f"{len(measured)} symbols, regime {regime}, breadth {breadth:.0f}%")
+        return report
+
+    except Exception as e:
+        logging.error(f"[afterhours] study pass raised: {e}")
+        return None
+
+
+def afterhours_study_status():
+    """Snapshot for the dashboard WS payload."""
+    allowed, window_reason = afterhours_in_study_window()
+    with _afterhours_lock:
+        rep = _afterhours_state['last_report']
+        graded = _afterhours_state['graded']
+        hits = _afterhours_state['grade_hits']
+        return {
+            'enabled': bool(AFTERHOURS_STUDY_ENABLED),
+            'in_window': bool(allowed),
+            'window_reason': window_reason,
+            'window_rule': 'runs Sat 10:00 PM ET through Fri 4:00 PM ET',
+            'interval_seconds': AFTERHOURS_STUDY_INTERVAL_SECONDS,
+            'cycles': _afterhours_state['cycles'],
+            'last_run': _afterhours_state['last_run'],
+            'lifetime_graded': graded,
+            'lifetime_correct': hits,
+            'lifetime_accuracy_pct': (hits / graded * 100.0) if graded else None,
+            'last_report': rep,
+        }
+
+
 def stop_if_stock_market_is_closed():
     nyse = mcal.get_calendar('NYSE')
     while True:
@@ -13895,6 +14352,15 @@ def stop_if_stock_market_is_closed():
             print_portfolio_gain_summary()
         except Exception as e:
             logging.warning(f"[portfolio] summary error while market closed: {e}")
+        # Brains keep studying the tape while the market is shut. Self-
+        # throttled to AFTERHOURS_STUDY_INTERVAL_SECONDS inside the function,
+        # so calling it on every 60s tick is cheap. Read-only: it cannot
+        # place, size or cancel an order -- trading stays gated behind this
+        # loop returning, which only happens in real session hours.
+        try:
+            run_afterhours_market_study()
+        except Exception as e:
+            logging.error(f"{current_time_str}: after-hours study raised: {e}")
         logging.info(f"{current_time_str}: {msg}")
         time.sleep(60)
 
@@ -22425,7 +22891,22 @@ class DashboardWSEngine:
         global SCREENER_PLAN_BLOCKED, SCREENER_PLAN_CHECKED_TS
         global V18_TIMING_MODE, V18_TIMING_ENABLED, V18_FLOOR_ENABLED
         global V18_FLOOR_VERBOSE, V18_MIN_CONF
+        global AFTERHOURS_STUDY_ENABLED, AFTERHOURS_STUDY_INTERVAL_SECONDS
         try:
+            # ── After-hours study knobs ─────────────────────────────────
+            if key == 'afterhours_study_enabled':
+                AFTERHOURS_STUDY_ENABLED = _as_bool(value)
+                _persist_setting(key, AFTERHOURS_STUDY_ENABLED)
+                floor_post('USER', 'instruction',
+                           f"After-hours study → {'ON' if AFTERHOURS_STUDY_ENABLED else 'OFF'}")
+                print(f"[afterhours] AFTERHOURS_STUDY_ENABLED = {AFTERHOURS_STUDY_ENABLED}",
+                      flush=True)
+                return
+            elif key == 'afterhours_study_interval_seconds':
+                AFTERHOURS_STUDY_INTERVAL_SECONDS = max(60, int(float(value)))
+                _persist_setting(key, AFTERHOURS_STUDY_INTERVAL_SECONDS)
+                print(f"[afterhours] interval = {AFTERHOURS_STUDY_INTERVAL_SECONDS}s", flush=True)
+                return
             # ── V18 timing brain / transcript knobs ──────────────────────
             if key == 'v18_timing_mode':
                 _m = str(value).strip().lower()
@@ -22951,6 +23432,12 @@ class DashboardWSEngine:
             }
         except Exception as e:
             state['brain_f'] = {'error': str(e)}
+
+        # After-hours study: what the brains learned while the market was shut.
+        try:
+            state['afterhours_study'] = afterhours_study_status()
+        except Exception as e:
+            state['afterhours_study'] = {'error': str(e)}
 
         # Per-position 1m chart tile: candlesticks + Chandelier Exit step
         # line with its Buy/Sell flips, MACD(12,26,9) histogram, live RSI(14).
