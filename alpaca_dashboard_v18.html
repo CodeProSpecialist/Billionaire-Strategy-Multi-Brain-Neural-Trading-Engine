@@ -99,7 +99,7 @@ td.right, th.right { text-align: right; }
   margin-top: 4px; display: grid; grid-template-columns: 1fr 1fr; gap: 2px 12px; }
 .pos-tile-body b { color: var(--fg); font-weight: 500; }
 
-/* Brain message log */
+/* Brain Room — Trading Floor */
 .feed-item { padding: 3px 6px; border-bottom: 1px solid var(--border);
   font-family: var(--mono); font-size: 11px; line-height: 1.5;
   display: flex; gap: 8px; align-items: baseline; }
@@ -674,10 +674,10 @@ td.right, th.right { text-align: right; }
   </div>
 </div>
 
-<!-- ═══ BRAIN MESSAGE LOG & COMMAND CONSOLE (Kalshi terminal) ═══ -->
+<!-- ═══ BRAIN ROOM — TRADING FLOOR (Kalshi terminal + command console) ═══ -->
 <div class="card full-row" style="margin-top:10px;">
   <div class="card-hd">
-    <h2>🧠 Brain Message Log <span style="font-size:10px;color:var(--fg3);font-weight:400">— lessons &amp; observations · type commands below</span></h2>
+    <h2>🧠 Brain Room — Trading Floor <span style="font-size:10px;color:var(--fg3);font-weight:400">— lessons &amp; observations · type commands below</span></h2>
     <div style="display:flex;align-items:center;gap:8px">
       <button class="btn btn-sm" style="background:var(--bg3);color:var(--fg);border:1px solid var(--border);padding:4px 8px;font-size:11px;cursor:pointer;border-radius:4px"
               onclick="document.getElementById('brainFeed').innerHTML='';">Clear</button>
@@ -809,7 +809,7 @@ td.right, th.right { text-align: right; }
   .pm-px-lbl{font-size:9px;color:#9ca3af;text-transform:uppercase;letter-spacing:.5px;font-weight:600}
   .pm-px-val{font-size:14px;color:#e5e7eb;font-family:'SF Mono',Consolas,monospace;font-weight:700}
 
-  /* Brain message log coloring */
+  /* Brain Room — Trading Floor message coloring */
   .brain-msg{padding:2px 0;white-space:pre-wrap;word-break:break-word}
   .brain-msg .bm-ts{color:#4b5563;margin-right:6px}
   .brain-msg .bm-who{font-weight:700;margin-right:6px}
@@ -2513,7 +2513,7 @@ function renderBlacklist(bl) {
 
 // renderFloor removed — see P0 fix above; renderTradingFloor owns #brainFeed.
 
-// ═══ Kalshi-style additions (profit monitor, brain suite, message log) ═══
+// ═══ Kalshi-style additions (profit monitor, brain suite, brain room) ═══
 
 function renderPmdt(list) {
   const grid = document.getElementById('pmdtGrid');
