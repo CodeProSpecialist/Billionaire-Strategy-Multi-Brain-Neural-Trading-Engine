@@ -17640,7 +17640,16 @@ WEEKDAY_BIAS_MIN_SAMPLE    = 60        # sessions needed before trusting a weekd
 # Operator rule: a weekday the stats call bearish (currently Tue/Thu/Fri on
 # the numbers above) should still be tradable IF the market has actually
 # proven itself strongly bullish THAT day -- but only in the mid-session
-# window, 11:30 AM to 3:45 PM ET.
+# window, 11:30 AM to 3:45 PM ET, and only during the months the operator
+# wants to be active on these uncertain days (Nov, May, Jun, Jul -- see
+# STRONG_BULL_OVERRIDE_MONTHS).
+#
+# NOTE on the month list: the big US earnings seasons actually run mid-Jan,
+# mid-Apr, mid-Jul and mid-Oct (the weeks after each quarter ends), so of the
+# four months chosen only July lines up with one. Nov, May and Jun are the
+# tail end of a season or between seasons. The months are configured as the
+# operator asked; if the intent is really "trade these days during earnings
+# season", the set to use would be {1, 4, 7, 10}.
 #
 # Why that window: before 11:30 the day has not shown its hand (the open is
 # noisy and a strong morning reverses often enough that an 11:30 read is the
@@ -17667,6 +17676,13 @@ WEEKDAY_BIAS_MIN_SAMPLE    = 60        # sessions needed before trusting a weekd
 # STRONG_BULL_OVERRIDE_MODE='shadow' to log what it WOULD have allowed
 # without actually unblocking those entries.
 STRONG_BULL_OVERRIDE_MODE     = 'armed'   # 'armed' | 'shadow' | 'off'
+# Operator rule: only take these uncertain weekdays during the months he
+# wants to be active in -- November, May, June and July. Outside those four
+# months a bearish weekday stays blocked no matter how strong the tape looks.
+# Set to None (or an empty set) to allow the override in every month.
+STRONG_BULL_OVERRIDE_MONTHS   = {11, 5, 6, 7}
+_MONTH_ABBR = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+               'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 STRONG_BULL_WINDOW_START      = (11, 30)  # ET -- earliest honest read on the day
 STRONG_BULL_WINDOW_END        = (15, 45)  # ET -- too late to work a trade after this
 STRONG_BULL_PROXY             = 'QQQ'
@@ -17685,6 +17701,19 @@ def _in_strong_bull_window(now_et=None):
     start = _dt_time(*STRONG_BULL_WINDOW_START)
     end = _dt_time(*STRONG_BULL_WINDOW_END)
     return start <= now_et.time() <= end
+
+
+def _in_strong_bull_month(now_et=None):
+    """
+    (allowed, label) -- is the current month one of the months the override is
+    permitted in? Empty/None month set means every month is allowed.
+    """
+    months = STRONG_BULL_OVERRIDE_MONTHS
+    if not months:
+        return True, 'all months'
+    now_et = now_et or datetime.now(eastern)
+    label = ', '.join(_MONTH_ABBR[m] for m in sorted(months))
+    return (now_et.month in months), label
 
 
 def check_strong_bull_day(now_et=None, force=False):
@@ -17825,8 +17854,13 @@ def check_weekday_bias_gate(now_et=None):
         # --- strong-bull override on an otherwise-blocked weekday ---
         if STRONG_BULL_OVERRIDE_MODE != 'off':
             in_window = _in_strong_bull_window(now_et)
+            month_ok, month_label = _in_strong_bull_month(now_et)
             w0 = f'{STRONG_BULL_WINDOW_START[0]:02d}:{STRONG_BULL_WINDOW_START[1]:02d}'
             w1 = f'{STRONG_BULL_WINDOW_END[0]:02d}:{STRONG_BULL_WINDOW_END[1]:02d}'
+            if not month_ok:
+                reason = (f'{reason}; strong-bull override only runs in '
+                          f'{month_label}')
+                in_window = False
             if in_window:
                 strong, strong_reason, _sinfo = check_strong_bull_day(now_et)
                 if strong:
@@ -17839,7 +17873,7 @@ def check_weekday_bias_gate(now_et=None):
                     return True, msg
                 reason = (f'{reason}; inside the {w0}-{w1} ET override window but '
                           f'{strong_reason}')
-            else:
+            elif month_ok:
                 reason = (f'{reason}; strong-bull override only applies '
                           f'{w0}-{w1} ET')
 
