@@ -3176,6 +3176,31 @@ class _BrainComms:
             for cb in self._subscribers.get(kind, []):
                 try: cb(msg)
                 except Exception: pass
+        # BRIDGE: state['brain_comms'] is published but the dashboard has no
+        # renderer for it, so everything posted to this bus -- regime changes,
+        # risk-state updates, per-brain votes, chair training/shadow notes --
+        # was invisible. Mirror it into the TRADING_FLOOR buffer, which is what
+        # the Brain Room — Trading Floor panel actually draws.
+        #
+        # Loop guard: when the KSB shim is active, TRADING_FLOOR.emit() posts
+        # back here tagged {'legacy_emit': True}. Those are skipped, so a
+        # message can never bounce between the two buses.
+        try:
+            if isinstance(payload, dict) and payload.get('legacy_emit'):
+                return
+            _bc_kind = str(kind or '').lower()
+            _kind = ('instruction' if _bc_kind in ('instruct', 'instruction')
+                     else 'lesson' if _bc_kind in ('lesson', 'learn')
+                     else 'training' if _bc_kind in ('train', 'training')
+                     else 'observation')
+            if isinstance(payload, dict):
+                _text = payload.get('text') or payload.get('detail') or ', '.join(
+                    f"{k}={v}" for k, v in list(payload.items())[:6])
+            else:
+                _text = str(payload)
+            TRADING_FLOOR.emit(f"{sender}", f"[{kind}] {_text}"[:500], _kind)
+        except Exception:
+            pass  # mirroring must never break the bus
 
     def subscribe(self, kind, callback):
         with self._lock:
@@ -7451,6 +7476,29 @@ def floor_post(from_name, msg_type, detail):
             counter_key = 'training'
         if counter_key:
             _floor_counts[counter_key] += 1
+
+    # BRIDGE: the dashboard's Brain Room — Trading Floor panel renders the
+    # TRADING_FLOOR buffer (state['trading_floor']), NOT this one. When
+    # renderFloor() was retired in favour of renderTradingFloor() as the single
+    # source of truth for #brainFeed, state['floor'] stopped being drawn --
+    # silently hiding every floor_post() message from the operator: blacklist
+    # adds, governor cooldowns, chair votes and blocks, per-symbol mutes,
+    # round-trip completions, and the replies to typed commands. They were
+    # still recorded here, just never shown anywhere.
+    #
+    # Rather than resurrect a second panel, mirror each post into the buffer
+    # that IS rendered, so one window carries all the brain chatter. Safe from
+    # recursion: _TradingFloor.emit() only appends to its own deque and never
+    # calls back into floor_post().
+    try:
+        _k = (msg_type or 'info')
+        _kind = ('instruction' if _k in ('instruction', 'buy', 'sell')
+                 else 'lesson' if _k in ('lesson', 'learn')
+                 else 'training' if _k == 'training'
+                 else 'observation')
+        TRADING_FLOOR.emit(from_name or 'BOT', str(detail)[:500], _kind)
+    except Exception:
+        pass  # mirroring must never break the original post
 
 
 def floor_snapshot(max_msgs=100):
