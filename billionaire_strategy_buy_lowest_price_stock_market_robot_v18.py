@@ -17636,11 +17636,163 @@ WEEKDAY_BIAS_REQUIRE_POS_AVG = True    # ...and have a positive mean return
 WEEKDAY_BIAS_MIN_SAMPLE    = 60        # sessions needed before trusting a weekday
 
 
+# ---------------- Strong-bull override on bearish weekdays -------------------
+# Operator rule: a weekday the stats call bearish (currently Tue/Thu/Fri on
+# the numbers above) should still be tradable IF the market has actually
+# proven itself strongly bullish THAT day -- but only in the mid-session
+# window, 11:30 AM to 3:45 PM ET.
+#
+# Why that window: before 11:30 the day has not shown its hand (the open is
+# noisy and a strong morning reverses often enough that an 11:30 read is the
+# earliest honest one), and after 3:45 there is not enough session left to
+# reach a target before the close.
+#
+# "Strongly bullish" is deliberately a HIGH bar -- this overrides a gate that
+# exists because these weekdays lose money, so a merely green tape is not
+# enough. ALL of these must hold on the QQQ proxy:
+#   1. the regime engine independently says BULL (not just not-bearish), and
+#      it must be the un-downgraded read -- the weak-bull downgrade already
+#      exists to catch "bullish on paper, nothing actually trading"
+#   2. QQQ is up at least STRONG_BULL_MIN_PROXY_GAIN vs yesterday's close
+#   3. QQQ is trading ABOVE its session VWAP (buyers in control all day, not
+#      a dead-cat morning pop being distributed into)
+#   4. QQQ sits in the top STRONG_BULL_MIN_RANGE_POS of today's range (near
+#      the highs, i.e. still being bought, not fading off a morning peak)
+#
+# HONESTY NOTE: this is a judgment rule, not a backtested edge. The weekday
+# split it overrides is itself marginal (p=0.058, see above), and no test was
+# run showing that "strong bull Tuesdays" are profitable -- it is plausible
+# that a strongly bullish Tuesday is just a Tuesday that has already made its
+# move. Treat the first weeks of this as live observation. Set
+# STRONG_BULL_OVERRIDE_MODE='shadow' to log what it WOULD have allowed
+# without actually unblocking those entries.
+STRONG_BULL_OVERRIDE_MODE     = 'armed'   # 'armed' | 'shadow' | 'off'
+STRONG_BULL_WINDOW_START      = (11, 30)  # ET -- earliest honest read on the day
+STRONG_BULL_WINDOW_END        = (15, 45)  # ET -- too late to work a trade after this
+STRONG_BULL_PROXY             = 'QQQ'
+STRONG_BULL_MIN_PROXY_GAIN    = 0.005     # QQQ at least +0.50% vs prev close
+STRONG_BULL_REQUIRE_ABOVE_VWAP = True     # ...and trading above session VWAP
+STRONG_BULL_MIN_RANGE_POS     = 0.70      # ...and in the top 30% of today's range
+STRONG_BULL_REQUIRE_REGIME    = True      # ...and the regime engine says BULL
+STRONG_BULL_CACHE_TTL_SECS    = 60        # re-measure at most once a minute
+
+_strong_bull_cache = {'ts': 0.0, 'result': None}
+
+
+def _in_strong_bull_window(now_et=None):
+    """True when the ET clock is inside the 11:30-15:45 override window."""
+    now_et = now_et or datetime.now(eastern)
+    start = _dt_time(*STRONG_BULL_WINDOW_START)
+    end = _dt_time(*STRONG_BULL_WINDOW_END)
+    return start <= now_et.time() <= end
+
+
+def check_strong_bull_day(now_et=None, force=False):
+    """
+    (is_strong, reason, info) -- has the market PROVEN itself strongly bullish
+    today? Measured on the QQQ proxy; see the criteria above. Fails CLOSED
+    (not strong) on any data problem, because this function only ever UNLOCKS
+    trading that a gate deliberately blocked -- a data error must never be
+    read as permission.
+    """
+    info = {'gain': None, 'vwap_pos': None, 'range_pos': None,
+            'regime': None, 'checks': []}
+    if STRONG_BULL_OVERRIDE_MODE == 'off':
+        return False, 'strong-bull override disabled', info
+
+    now = time.time()
+    if not force and (now - _strong_bull_cache['ts']) < STRONG_BULL_CACHE_TTL_SECS \
+            and _strong_bull_cache['result'] is not None:
+        return _strong_bull_cache['result']
+
+    failed = []
+    try:
+        # --- daily bars for prev close + today's high/low ---
+        df = yf_history(STRONG_BULL_PROXY, period='5d')
+        if df is None or len(df) < 2:
+            out = (False, f'{STRONG_BULL_PROXY} daily bars unavailable — '
+                          f'treating as NOT strongly bullish', info)
+            _strong_bull_cache.update(ts=now, result=out)
+            return out
+
+        prev_close = float(df['Close'].iloc[-2])
+        today_high = float(df['High'].iloc[-1])
+        today_low = float(df['Low'].iloc[-1])
+
+        price = _fetch_current_price(STRONG_BULL_PROXY)
+        if not price or price <= 0:
+            price = float(df['Close'].iloc[-1])
+        if not price or price <= 0 or prev_close <= 0:
+            out = (False, f'{STRONG_BULL_PROXY} price unusable — '
+                          f'treating as NOT strongly bullish', info)
+            _strong_bull_cache.update(ts=now, result=out)
+            return out
+
+        # 1. regime must independently say BULL
+        if STRONG_BULL_REQUIRE_REGIME:
+            try:
+                reg = (get_market_regime() or {}).get('regime')
+            except Exception:
+                reg = None
+            info['regime'] = reg
+            if reg != REGIME_BULL:
+                failed.append(f'regime is {reg or "unknown"}, not {REGIME_BULL}')
+            else:
+                info['checks'].append(f'regime={reg}')
+
+        # 2. day gain vs yesterday's close
+        gain = (price - prev_close) / prev_close
+        info['gain'] = round(gain, 5)
+        if gain < STRONG_BULL_MIN_PROXY_GAIN:
+            failed.append(f'{STRONG_BULL_PROXY} {gain*100:+.2f}% < '
+                          f'+{STRONG_BULL_MIN_PROXY_GAIN*100:.2f}% required')
+        else:
+            info['checks'].append(f'{STRONG_BULL_PROXY} {gain*100:+.2f}%')
+
+        # 3. above session VWAP
+        if STRONG_BULL_REQUIRE_ABOVE_VWAP:
+            vwap = _fetch_intraday_vwap(STRONG_BULL_PROXY)
+            if not vwap or vwap <= 0:
+                failed.append('session VWAP unavailable')
+            else:
+                info['vwap_pos'] = round((price - vwap) / vwap, 5)
+                if price <= vwap:
+                    failed.append(f'below session VWAP (${price:.2f} vs ${vwap:.2f})')
+                else:
+                    info['checks'].append(f'above VWAP (+{info["vwap_pos"]*100:.2f}%)')
+
+        # 4. near the highs of the day, not fading off a morning peak
+        day_range = today_high - today_low
+        if day_range > 0:
+            range_pos = (price - today_low) / day_range
+            info['range_pos'] = round(range_pos, 4)
+            if range_pos < STRONG_BULL_MIN_RANGE_POS:
+                failed.append(f'only {range_pos*100:.0f}% up today\'s range '
+                              f'(need {STRONG_BULL_MIN_RANGE_POS*100:.0f}%)')
+            else:
+                info['checks'].append(f'{range_pos*100:.0f}% up the day\'s range')
+    except Exception as e:
+        out = (False, f'strong-bull check error ({e}) — treating as NOT bullish', info)
+        _strong_bull_cache.update(ts=now, result=out)
+        return out
+
+    if failed:
+        out = (False, 'not strongly bullish: ' + '; '.join(failed), info)
+    else:
+        out = (True, 'strongly bullish: ' + ', '.join(info['checks']), info)
+    _strong_bull_cache.update(ts=now, result=out)
+    return out
+
+
 def check_weekday_bias_gate(now_et=None):
     """(allow, reason) -- block new entries on historically bearish weekdays.
 
     Reads nasdaq_outlook_snapshot()['weekday_stats'], the same data behind the
     dashboard's bull-day-odds tile. Fails OPEN on any data problem.
+
+    EXCEPTION: a blocked weekday reopens between 11:30 and 15:45 ET if the
+    market has proven itself strongly bullish that day -- see
+    check_strong_bull_day().
     """
     if WEEKDAY_BIAS_MODE == 'off':
         return True, 'weekday bias disabled'
@@ -17669,6 +17821,28 @@ def check_weekday_bias_gate(now_et=None):
             return True, (f'{name} is a historically bullish day '
                           f'(up {up*100:.1f}%, mean {avg*100:+.3f}%, n={n})')
         reason = f"{name} is historically bearish: " + ', '.join(bad) + f' (n={n})'
+
+        # --- strong-bull override on an otherwise-blocked weekday ---
+        if STRONG_BULL_OVERRIDE_MODE != 'off':
+            in_window = _in_strong_bull_window(now_et)
+            w0 = f'{STRONG_BULL_WINDOW_START[0]:02d}:{STRONG_BULL_WINDOW_START[1]:02d}'
+            w1 = f'{STRONG_BULL_WINDOW_END[0]:02d}:{STRONG_BULL_WINDOW_END[1]:02d}'
+            if in_window:
+                strong, strong_reason, _sinfo = check_strong_bull_day(now_et)
+                if strong:
+                    msg = (f'{name} is normally blocked ({", ".join(bad)}), but the '
+                           f'market is {strong_reason} and it is inside the '
+                           f'{w0}-{w1} ET window — trading allowed.')
+                    if STRONG_BULL_OVERRIDE_MODE == 'shadow':
+                        return False, (f'{reason} [strong-bull override SHADOW: '
+                                       f'would have allowed — {strong_reason}]')
+                    return True, msg
+                reason = (f'{reason}; inside the {w0}-{w1} ET override window but '
+                          f'{strong_reason}')
+            else:
+                reason = (f'{reason}; strong-bull override only applies '
+                          f'{w0}-{w1} ET')
+
         if WEEKDAY_BIAS_MODE == 'shadow':
             return True, f'[SHADOW would-deny] {reason}'
         return False, reason
