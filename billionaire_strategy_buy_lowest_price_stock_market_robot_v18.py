@@ -17642,7 +17642,7 @@ WEEKDAY_BIAS_MIN_SAMPLE    = 60        # sessions needed before trusting a weekd
 # proven itself strongly bullish THAT day -- but only in the mid-session
 # window, 11:30 AM to 3:45 PM ET, and only inside the seasonal date ranges
 # the operator wants to be active on these uncertain days (Apr 15-Jul 31,
-# all of November, and Dec 1-14 -- see STRONG_BULL_OVERRIDE_WINDOWS).
+# all of November, and Dec 1-21 -- see STRONG_BULL_OVERRIDE_WINDOWS).
 #
 # Why that window: before 11:30 the day has not shown its hand (the open is
 # noisy and a strong morning reverses often enough that an 11:30 read is the
@@ -17675,7 +17675,7 @@ STRONG_BULL_OVERRIDE_MODE     = 'armed'   # 'armed' | 'shadow' | 'off'
 #
 #   Apr 15 - Jul 31   ("mid April through July 31"; mid-April read as the 15th)
 #   Nov  1 - Nov 30   (all of November)
-#   Dec  1 - Dec 14   (first two weeks only -- deliberately NOT all of December)
+#   Dec  1 - Dec 21   (first three weeks only -- deliberately NOT all of December)
 #
 # Each entry is ((start_month, start_day), (end_month, end_day)), inclusive
 # on both ends. Ranges are compared on month/day only, so they repeat every
@@ -17683,7 +17683,7 @@ STRONG_BULL_OVERRIDE_MODE     = 'armed'   # 'armed' | 'shadow' | 'off'
 # override year-round.
 STRONG_BULL_OVERRIDE_WINDOWS  = [((4, 15), (7, 31)),
                                  ((11, 1), (11, 30)),
-                                 ((12, 1), (12, 14))]
+                                 ((12, 1), (12, 21))]
 _MONTH_ABBR = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 STRONG_BULL_WINDOW_START      = (11, 30)  # ET -- earliest honest read on the day
@@ -20482,23 +20482,36 @@ def _sell_stocks_body(lock):
                             symbol=symbol, qty=qty, side='sell',
                             type='market', time_in_force='day',
                         )
-                        # Confirm the first sell before sweeping any remainder.
-                        _bt, _bfq, _bfp, _bstatus = _poll_order_terminal(
-                            getattr(_bull_order, 'id', None), DUST_SWEEP_TIMEOUT_SECS
-                        ) if getattr(_bull_order, 'id', None) else (True, qty, None, 'assumed')
-                        if _bfq > 0:
-                            qty = _bfq
+                        # Confirm the first sell actually filled before doing
+                        # anything else. BUGFIX: this path assumed the submit
+                        # succeeded and dropped the DB row regardless, so a
+                        # rejected or canceled bull sell made the bot believe
+                        # it was flat while it still held the shares -- the
+                        # same desync the ML exit path already guards against.
+                        _boid = getattr(_bull_order, 'id', None)
+                        if _boid:
+                            _bt, _bfq, _bfp, _bstatus = _poll_order_terminal(
+                                _boid, DUST_SWEEP_TIMEOUT_SECS)
+                        else:
+                            _bfq, _bfp, _bstatus = qty, None, 'no order id'
+                        if _bfq <= 0:
+                            print(f"[bull] {symbol}: sell did not fill "
+                                  f"(status={_bstatus}). Position retained.")
+                            logging.warning(f"{now_str} [bull] {symbol}: sell order "
+                                            f"{_bstatus} with no fill; DB row retained.")
+                            continue
+                        qty = _bfq
                         if _bfp:
                             current_price = _bfp
                         print(f"[bull] {now_str}, SOLD {qty:.4f} sh of {symbol} @ ${current_price:.2f} "
                               f"(target {BULL_TAKE_PROFIT_PCT}x hit)")
                         logging.info(f"{now_str} [bull] Sold {qty:.4f} sh of {symbol} @ ${current_price:.2f}")
 
+                        note_exit_reason(symbol, 'bull take-profit target')
                         # SECOND SELL ORDER for any sub-$1.00 fractional
                         # remainder; merged so this stays ONE round trip.
                         _bdq, _bdp = sweep_residual_dust(symbol, "bull EXIT", now_str,
                                                          fallback_price=current_price)
-                        note_exit_reason(symbol, 'bull take-profit target')
                         if _bdq > 0:
                             _bp = _bdp if _bdp > 0 else current_price
                             _btot = qty + _bdq
