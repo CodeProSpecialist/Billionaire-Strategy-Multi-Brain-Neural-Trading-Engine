@@ -3592,6 +3592,15 @@ class _ManagerBrain(_BaseBrain):
 
 MANAGER_BRAIN = _ManagerBrain()
 
+# Mirror of MANAGER_BRAIN.strictness as a module-level global. The live state
+# that actually drives behavior lives on the brain object (and the dashboard
+# snapshot reads it from there) -- this exists because the settings whitelist
+# names MANAGER_STRICTNESS as its target, and without a module-level default
+# the persisted loader would CREATE the name at load time rather than update
+# an existing one. Defining it here keeps the settings wiring honest and
+# self-checkable; _set_manager_strictness() is what applies the real effect.
+MANAGER_STRICTNESS = getattr(MANAGER_BRAIN, 'strictness', 'medium')
+
 
 # ---------------- 3. CapitalAllocationBrain -----------------------------------
 class _CapitalAllocationBrain(_BaseBrain):
@@ -9768,8 +9777,31 @@ def _as_bool(v):
     return str(v).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _as_v18_mode(v):
+    """Caster for v18_timing_mode — only the three legal levels, else leave
+    the stored value at 'armed' rather than booting into an unknown mode."""
+    m = str(v).strip().lower()
+    return m if m in ('off', 'shadow', 'armed') else 'armed'
+
+
+def _as_v18_min_conf(v):
+    """Caster for v18_min_conf — same clamp _apply_setting uses, so a hand-
+    edited settings file can't push the floor outside the supported range."""
+    return max(0.34, min(0.95, float(v)))
+
+
 _SETTINGS_WHITELIST = {
     'manager_strictness':       ('MANAGER_STRICTNESS', _set_manager_strictness),
+    # V18 timing brain / trading-floor knobs. These were accepted by
+    # _apply_setting (and called _persist_setting) but were NOT listed here,
+    # so _persist_setting returned silently and every change was lost on the
+    # next restart -- the dashboard appeared to accept the setting and the
+    # bot quietly reverted to the code default.
+    'v18_timing_mode':          ('V18_TIMING_MODE', _as_v18_mode),
+    'v18_timing_enabled':       ('V18_TIMING_ENABLED', _as_bool),
+    'v18_floor_enabled':        ('V18_FLOOR_ENABLED', _as_bool),
+    'v18_floor_verbose':        ('V18_FLOOR_VERBOSE', _as_bool),
+    'v18_min_conf':             ('V18_MIN_CONF', _as_v18_min_conf),
     'chandelier_mode':          ('CHANDELIER_MODE', str),
     'chandelier_atr_mult':      ('CHANDELIER_ATR_MULT', float),
     'chandelier_min_hold_secs': ('CHANDELIER_MIN_HOLD_SECS', int),
@@ -9809,6 +9841,40 @@ _SETTINGS_WHITELIST = {
     'screener_plan_checked_ts':  ('SCREENER_PLAN_CHECKED_TS', float),
     'chandelier_brain_tuning':   ('CHANDELIER_BRAIN_TUNING', str),
 }
+
+def validate_settings_wiring(verbose=False):
+    """
+    Self-check that every persistable setting is actually CONNECTED to a real
+    module global, and report any that are not. Returns a list of problem
+    strings (empty when everything is wired).
+
+    This exists because the failure mode is silent in both directions:
+      * a whitelist entry naming a global that does not exist creates a NEW
+        global on load that nothing ever reads -- the setting appears to
+        apply and does nothing;
+      * a key handled by _apply_setting but missing from the whitelist makes
+        _persist_setting return silently -- the setting applies for this run
+        and is lost on restart.
+    Neither raises, so without a check like this they go unnoticed for months.
+    Logs findings and never raises; this must never block startup.
+    """
+    problems = []
+    try:
+        g = globals()
+        for key, (global_name, caster) in _SETTINGS_WHITELIST.items():
+            if global_name not in g:
+                problems.append(f"{key}: target global {global_name} does not exist")
+            elif not callable(caster):
+                problems.append(f"{key}: caster for {global_name} is not callable")
+        for p in problems:
+            logging.warning(f"[settings] WIRING: {p}")
+        if verbose and not problems:
+            logging.info(f"[settings] wiring OK — {len(_SETTINGS_WHITELIST)} "
+                         f"persistable settings all connected to live globals")
+    except Exception as _e:
+        logging.warning(f"[settings] wiring validation failed: {_e}")
+    return problems
+
 
 def _load_persisted_settings():
     """Load and apply persisted settings. Called at startup — writes to
@@ -22550,6 +22616,10 @@ class DashboardWSEngine:
                                f"manager_strictness: unknown level '{value}' "
                                f"(use: strict, medium, least_strict)")
                     return
+                # Keep the module-level mirror in step with the brain, so the
+                # global and the live state can't drift apart.
+                globals()['MANAGER_STRICTNESS'] = getattr(
+                    MANAGER_BRAIN, 'strictness', str(value))
             else:
                 floor_post('BOT', 'info', f"unknown or unchangeable setting: {key}")
                 return
@@ -27273,6 +27343,9 @@ def main():
     # per-symbol mute thresholds, etc.) before anything else consumes them.
     # No-op if the settings file doesn't exist (first-ever run).
     try:
+        # Check the wiring BEFORE loading, so a disconnected setting is
+        # reported rather than silently creating a global nothing reads.
+        validate_settings_wiring(verbose=True)
         _load_persisted_settings()
     except Exception as _e:
         logging.warning(f"[settings] startup load failed: {_e}")
