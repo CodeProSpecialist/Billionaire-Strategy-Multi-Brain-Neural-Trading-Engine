@@ -12878,6 +12878,11 @@ def _sell_with_escalation(symbol, qty, last_known_price, step1_type, step1_tif,
     total_notional = 0.0
     steps_used = []
 
+    # Label the training sample for whichever exit drove this chain (HARD
+    # STOP, CHANDELIER, the AM/PM profit sweeps, ...). Every path that closes
+    # a position through here therefore reaches the brains correctly tagged.
+    note_exit_reason(symbol, sweep_label)
+
     def _log_fill(step_name, fq, fp):
         nonlocal total_filled_qty, total_notional
         if fq <= 0:
@@ -13198,6 +13203,101 @@ def register_completed_round_trip(symbol, qty, price, label='EXIT'):
     except Exception:
         pass
     return n
+
+
+_EXIT_REASON_NOTES = {}
+
+
+def note_exit_reason(symbol, reason):
+    """
+    Record WHY a position is being exited, so the centralized brain feed can
+    label the training sample correctly no matter which exit path closed the
+    trade. Best-effort; the feed falls back to a realized-return heuristic
+    when no note was left.
+    """
+    try:
+        _EXIT_REASON_NOTES[str(symbol).upper()] = str(reason or '')
+    except Exception:
+        pass
+
+
+def _classify_exit_reason(symbol, realized):
+    """Map the recorded exit note (+ realized return) to a training label."""
+    note = ''
+    try:
+        note = _EXIT_REASON_NOTES.pop(str(symbol).upper(), '') or ''
+    except Exception:
+        note = ''
+    low = note.lower()
+    if 'stop' in low or realized <= -0.02:
+        return "hard_stop", note
+    if 'trail' in low or 'chandelier' in low or 'target' in low or realized > 0.005:
+        return "trail_exit", note
+    if 'scale' in low:
+        return "scale_out", note
+    return "timeout", note
+
+
+def feed_brains_on_round_trip(symbol, qty, exit_price, entry_price):
+    """
+    Feed ONE completed round trip trade to every learning component, exactly
+    once, from the single place a position actually goes flat.
+
+    This used to live inline in the take-profit branch of sell_stocks, which
+    meant a trade closed by ANY other exit path -- hard stop, chandelier,
+    bad-news stop, scale-out completion, the bull target, or the pre-close
+    profit sweep -- was never seen by CAPITAL_ALLOC, PROFIT_GROWTH,
+    CHANDELIER_BRAIN, DAYTRADE_BRAIN, CORRELATION_GUARD or INTEL. Those
+    brains were therefore training on a biased subset: mostly the clean
+    take-profit wins, almost none of the stop-outs they most need to learn
+    from.
+
+    Running it here also means the dust sweep's second sell order is already
+    merged into `qty` / `exit_price`, so the brains see one round trip with
+    the true total size and true average exit, not two fragments.
+    """
+    try:
+        _yf_sym = str(symbol).replace('.', '-')  # yfinance style symbol
+        entry_price = float(entry_price or 0)
+        exit_price = float(exit_price or 0)
+        realized = ((exit_price - entry_price) / entry_price) if entry_price > 0 else 0.0
+        exit_reason, note = _classify_exit_reason(symbol, realized)
+
+        CAPITAL_ALLOC.update(_yf_sym, realized)
+        PROFIT_GROWTH.update(realized)
+        CHANDELIER_BRAIN.record(exit_reason, realized)
+        CORRELATION_GUARD.on_close(_yf_sym)
+
+        # Per-symbol daytrade brain retraining sample.
+        try:
+            DAYTRADE_BRAIN.record_trade(_yf_sym,
+                {"rsi": 50, "macd_hist": 0, "atr_pct": 0.02,
+                 "dist_sma200_pct": 0.0, "adx": 20, "volume_ratio": 1.0},
+                won=realized > 0)
+        except Exception:
+            pass
+
+        # Close out the INTEL trade if we opened one.
+        if INTEL is not None:
+            _tid = _INTEL_OPEN_TRADES.pop(_yf_sym, None)
+            if _tid is not None:
+                INTEL.log_exit(_tid, exit_price, exit_reason, realized)
+
+        TRADING_FLOOR.emit("SELL_HOOK",
+                           f"closed {symbol} @ ${exit_price:.2f} "
+                           f"ret={realized*100:+.2f}% ({exit_reason}"
+                           f"{': ' + note if note else ''})",
+                           "lesson" if realized > 0 else "observation")
+        logging.info(f"BRAIN FEED {symbol}: round trip {qty:.6f} sh, entry "
+                     f"${entry_price:.4f} -> exit ${exit_price:.4f} "
+                     f"({realized*100:+.2f}%, {exit_reason}) fed to all brains.")
+        return realized, exit_reason
+    except Exception as _e:
+        try:
+            _brain_log("SELL_HOOK", f"{symbol}: brain feed failed: {_e}")
+        except Exception:
+            logging.warning(f"{symbol}: brain feed failed: {_e}")
+        return 0.0, "unknown"
 
 
 def round_trips_today():
@@ -20168,6 +20268,7 @@ def _sell_stocks_body(lock):
                         # remainder; merged so this stays ONE round trip.
                         _bdq, _bdp = sweep_residual_dust(symbol, "bull EXIT", now_str,
                                                          fallback_price=current_price)
+                        note_exit_reason(symbol, 'bull take-profit target')
                         if _bdq > 0:
                             _bp = _bdp if _bdp > 0 else current_price
                             _btot = qty + _bdq
@@ -20712,45 +20813,13 @@ def _sell_stocks_body(lock):
                 logging.info(f"{now_str} {symbol}: merged dust {dust_qty:.6f} sh @ "
                              f"${_px:.4f} into the primary exit (one round trip).")
 
-            # ═══ BRAIN SUITE POST-SELL ═══
-            try:
-                _yf_sym = symbol.replace('.', '-')  # yfinance style symbol
-                _realized = (sold_price - bought_price) / bought_price if bought_price > 0 else 0.0
-                _reason_low = (reason or '').lower()
-                if 'stop' in _reason_low or _realized <= -0.02:
-                    _exit_reason = "hard_stop"
-                elif 'trail' in _reason_low or 'chandelier' in _reason_low or _realized > 0.005:
-                    _exit_reason = "trail_exit"
-                elif 'scale' in _reason_low:
-                    _exit_reason = "scale_out"
-                else:
-                    _exit_reason = "timeout"
-
-                CAPITAL_ALLOC.update(_yf_sym, _realized)
-                PROFIT_GROWTH.update(_realized)
-                CHANDELIER_BRAIN.record(_exit_reason, _realized)
-                CORRELATION_GUARD.on_close(_yf_sym)
-
-                # Record for per-symbol daytrade brain retraining
-                try:
-                    DAYTRADE_BRAIN.record_trade(_yf_sym,
-                        {"rsi": 50, "macd_hist": 0, "atr_pct": 0.02,
-                         "dist_sma200_pct": 0.0, "adx": 20, "volume_ratio": 1.0},
-                        won=_realized > 0)
-                except Exception: pass
-
-                # Close out the INTEL trade if we opened one
-                if INTEL is not None:
-                    _tid = _INTEL_OPEN_TRADES.pop(_yf_sym, None)
-                    if _tid is not None:
-                        INTEL.log_exit(_tid, sold_price, _exit_reason, _realized)
-
-                TRADING_FLOOR.emit("SELL_HOOK",
-                    f"closed {symbol} @ ${sold_price:.2f} ret={_realized*100:+.2f}% "
-                    f"({_exit_reason})",
-                    "lesson" if _realized > 0 else "observation")
-            except Exception as _e:
-                _brain_log("SELL_HOOK", f"{symbol}: post-sell hook failed: {_e}")
+            # The brain suite is fed centrally, once, when the position
+            # actually goes flat (see feed_brains_on_round_trip in the
+            # to_remove consumer below) -- so EVERY exit path trains the
+            # brains, not just this one, and the dust sweep's second sell is
+            # already merged in. All this path needs to do is record why it
+            # exited, so the training sample gets the right label.
+            note_exit_reason(symbol, reason)
 
             with open(csv_filename, mode='a', newline='') as f:
                 csv.DictWriter(f, fieldnames=fieldnames).writerow({
@@ -20784,6 +20853,13 @@ def _sell_stocks_body(lock):
                 # it is too small to matter. Treating it as "still held" is
                 # what used to leave trades permanently open, so the row is
                 # closed and the exit counts as one finished round trip.
+                # Capture the entry price BEFORE any delete below detaches the
+                # row -- the brain feed needs it to compute realized return.
+                _entry_px = 0.0
+                try:
+                    _entry_px = float(getattr(row, 'avg_price', 0) or 0) if row else 0.0
+                except Exception:
+                    _entry_px = 0.0
                 _left_qty = (row.quantity - qty) if row else 0.0
                 _left_value = _left_qty * (price or 0.0)
                 if row and _left_qty > 1e-6 and _left_value > DUST_MAX_VALUE_USD:
@@ -20810,6 +20886,15 @@ def _sell_stocks_body(lock):
                         register_completed_round_trip(symbol, qty, price, label='EXIT')
                     except Exception as _rt_e:
                         logging.warning(f"{symbol}: round-trip registration failed: {_rt_e}")
+
+                    # Feed that same single round trip to every learning
+                    # component. This runs for EVERY exit path (take-profit,
+                    # hard stop, chandelier, bad-news stop, scale-out
+                    # completion, bull target, pre-close sweep), because this
+                    # is the one place a position goes flat -- and the dust
+                    # sweep is already merged into qty/price, so the brains
+                    # train on one complete trade, not two fragments.
+                    feed_brains_on_round_trip(symbol, qty, price, _entry_px)
 
                     # REVIEW ITEM #7: fill in the outcome on the most recent
                     # still-open TradeFeatures row for this symbol, so the
@@ -20878,10 +20963,21 @@ def _sell_stocks_body(lock):
                             # retrain window so tonight's head learns from
                             # today's actual fills. Both are best-effort.
                             try:
+                                # BUGFIX: this read `position`, which is the
+                                # leftover loop variable from the per-symbol
+                                # sell loop above -- i.e. the LAST symbol
+                                # processed, not necessarily this one. That
+                                # mislabeled the retrain sample with another
+                                # stock's entry price and size, and when the
+                                # variable was unset the whole v18 labeling
+                                # below silently skipped (entry_px > 0 gate).
+                                # Use this symbol's own recorded entry and the
+                                # quantity that actually closed (dust sweep
+                                # included).
                                 _v18_entry_px = float(
-                                    getattr(position, 'avg_entry_price', 0) or 0)
+                                    _entry_px or getattr(feat_row, 'entry_price', 0) or 0)
                                 _v18_exit_px = float(price or 0)
-                                _v18_qty = float(getattr(position, 'qty', 0) or 0)
+                                _v18_qty = float(qty or 0)
                                 _v18_held = 0.0
                                 try:
                                     _v18_held = (time.time() - float(
