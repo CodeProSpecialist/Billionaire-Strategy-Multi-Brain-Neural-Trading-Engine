@@ -357,9 +357,9 @@ td.right, th.right { text-align: right; }
 
 
   <div class="card">
-    <div class="card-hd"><h2>🧠 Brains Health</h2><span class="tag" id="ksbHealthTag">—</span></div>
+    <div class="card-hd"><h2>🧠 Brains Health</h2><span class="tag" id="legacyHealthTag">—</span></div>
     <div class="card-bd">
-      <table id="ksb-health-tbl" style="font-size:11px; width:100%;">
+      <table id="legacy-health-tbl" style="font-size:11px; width:100%;">
         <thead><tr>
           <th>Brain</th>
           <th class="right">State</th>
@@ -370,9 +370,9 @@ td.right, th.right { text-align: right; }
       </table>
       <div class="section-div"><h3>24h Retrain Scheduler</h3></div>
       <div class="kv">
-        <div class="k">Status</div><div class="v" id="ksb-sched">running</div>
-        <div class="k">Next Tick</div><div class="v" id="ksb-sched-next">—</div>
-        <div class="k">Last Retrain</div><div class="v" id="ksb-sched-last">—</div>
+        <div class="k">Status</div><div class="v" id="legacy-sched">running</div>
+        <div class="k">Next Tick</div><div class="v" id="legacy-sched-next">—</div>
+        <div class="k">Last Retrain</div><div class="v" id="legacy-sched-last">—</div>
       </div>
     </div>
   </div>
@@ -1030,7 +1030,7 @@ td.right, th.right { text-align: right; }
         <div class="section-div"><h3>🧠 Brain Suite</h3></div>
         <div class="inp-row">
           <label>Gate Mode</label>
-          <select class="inp-sel" id="sKsbGateMode" onchange="markDirty('ksb_gate_mode', this.value)">
+          <select class="inp-sel" id="sLegacyGateMode" onchange="markDirty('legacy_gate_mode', this.value)">
             <option value="off">off (brains observe only, never gate)</option>
             <option value="shadow">shadow (log denials, auto-approve)</option>
             <option value="armed">armed (brains gate for real)</option>
@@ -1038,8 +1038,8 @@ td.right, th.right { text-align: right; }
         </div>
         <div class="inp-row">
           <label>Auto-shadow until N lessons</label>
-          <input class="inp" id="sKsbMinLessons" type="number" step="10" min="0" max="1000"
-            onchange="markDirty('ksb_gate_min_lessons', parseInt(this.value))">
+          <input class="inp" id="sLegacyMinLessons" type="number" step="10" min="0" max="1000"
+            onchange="markDirty('legacy_gate_min_lessons', parseInt(this.value))">
         </div>
         <div class="inp-row">
           <label>Per-order minimum ($)</label>
@@ -1049,17 +1049,17 @@ td.right, th.right { text-align: right; }
         </div>
         <div class="inp-row">
           <label>Lessons seen</label>
-          <span class="v" id="sKsbLessonsSeen" style="font-family:monospace;">—</span>
+          <span class="v" id="sLegacyLessonsSeen" style="font-family:monospace;">—</span>
         </div>
         <div class="inp-row">
           <label>Retrain Now</label>
-          <button onclick="sendCmd({action:'ksb_retrain_now'})"
+          <button onclick="sendCmd({action:'legacy_retrain_now'})"
                   style="padding:4px 12px;background:var(--fg2);color:#000;
                          border:none;border-radius:4px;cursor:pointer;">Retrain</button>
         </div>
         <div class="inp-row">
           <label>Pretrain (fresh)</label>
-          <button onclick="if(confirm('Wipe brains + pretrain 20k each? (~1 minute CPU)')){sendCmd({action:'ksb_pretrain_fresh'})}"
+          <button onclick="if(confirm('Wipe brains + pretrain 20k each? (~1 minute CPU)')){sendCmd({action:'legacy_pretrain_fresh'})}"
                   style="padding:4px 12px;background:var(--red);color:#000;
                          border:none;border-radius:4px;cursor:pointer;">Pretrain 20k×5</button>
         </div>
@@ -1418,7 +1418,7 @@ function render(s) {
   renderPmdt(s.profit_monitor_daytrade);
   renderBrainTrainingProgress(s.brain_suite);
   renderBrainSuite(s.brain_suite);
-  renderKsbHealth(s.brain_suite);
+  renderLegacyHealth(s.brain_suite);
   renderComposite(s.composite);
   renderDecisions(s.decisions);
   renderIntel(s.intel);
@@ -2910,8 +2910,8 @@ function renderSettings(s) {
   setIf('sPsMute', s.persymbol_mute_winrate, 'persymbol_mute_winrate');
   setIf('sPsMin', s.persymbol_min_trades, 'persymbol_min_trades');
   // Brain-gate settings
-  setIf('sKsbGateMode', s.ksb_gate_mode, 'ksb_gate_mode');
-  setIf('sKsbMinLessons', s.ksb_gate_min_lessons, 'ksb_gate_min_lessons');
+  setIf('sLegacyGateMode', s.legacy_gate_mode, 'legacy_gate_mode');
+  setIf('sLegacyMinLessons', s.legacy_gate_min_lessons, 'legacy_gate_min_lessons');
   setIf('sOrderMinDollars', s.order_min_dollars, 'order_min_dollars');
 
   // Checkboxes use .checked, not .value — and must respect pending edits too.
@@ -2935,10 +2935,10 @@ function renderSettings(s) {
       scrEl.style.color = s.screener_enabled ? 'var(--green, #4ade80)' : 'var(--fg3)';
     }
   }
-  const lsEl = document.getElementById('sKsbLessonsSeen');
+  const lsEl = document.getElementById('sLegacyLessonsSeen');
   if (lsEl) {
-    const seen = +s.ksb_lessons_seen || 0;
-    const need = +s.ksb_gate_min_lessons || 50;
+    const seen = +s.legacy_lessons_seen || 0;
+    const need = +s.legacy_gate_min_lessons || 50;
     lsEl.textContent = `${seen} / ${need} ${seen >= need ? '✓ armed-eligible' : '(shadow)'}`;
     lsEl.style.color = seen >= need ? 'var(--green, #4ade80)' : 'var(--fg3)';
   }
@@ -2984,9 +2984,9 @@ document.addEventListener('DOMContentLoaded', () => {
 connect();
 
 // ═══ Brains Health strip ═══
-function renderKsbHealth(bs) {
-  const tbody = document.querySelector('#ksb-health-tbl tbody');
-  const tag = document.getElementById('ksbHealthTag');
+function renderLegacyHealth(bs) {
+  const tbody = document.querySelector('#legacy-health-tbl tbody');
+  const tag = document.getElementById('legacyHealthTag');
   if (!tbody || !tag) return;
   if (!bs || bs.error) {
     tag.textContent = 'OFFLINE'; tag.className = 'tag tag-red';
@@ -3029,9 +3029,9 @@ function renderKsbHealth(bs) {
   // bs.scheduler = {last_retrain_ts, next_tick_ts, now_ts}. Fallback to
   // static "running" text if the scheduler block hasn't been published yet.
   const sched = bs.scheduler || {};
-  const schedEl = document.getElementById('ksb-sched');
-  const schedNext = document.getElementById('ksb-sched-next');
-  const schedLast = document.getElementById('ksb-sched-last');
+  const schedEl = document.getElementById('legacy-sched');
+  const schedNext = document.getElementById('legacy-sched-next');
+  const schedLast = document.getElementById('legacy-sched-last');
   if (schedEl) schedEl.textContent = 'running (daemon)';
   const rel = (delta) => {
     if (!isFinite(delta) || delta === 0) return '—';
@@ -3050,7 +3050,7 @@ function renderKsbHealth(bs) {
   if (schedLast) schedLast.textContent = sched.last_retrain_ts
     ? rel(sched.last_retrain_ts - now) : 'never';
 }
-// ═══ end KSB health ═══
+// ═══ end LEGACY health ═══
 
 // ═══ Composite grade renderers (ranking + fills) ═══════════════════════
 function _cgCls(v) {
