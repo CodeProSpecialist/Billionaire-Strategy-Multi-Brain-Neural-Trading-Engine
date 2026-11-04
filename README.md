@@ -82,9 +82,28 @@ git clone https://github.com/CodeProSpecialist/Billionaire-Strategy-Multi-Brain-
 cd Billionaire-Strategy-Multi-Brain-Neural-Trading-Engine
 ```
 
-### 3. Python packages
+### 3. Anaconda
 
-The robot runs in the **Anaconda `base` environment** — no virtual environment needed. Open a terminal with `base` active (Anaconda activates it by default; if not, run `conda activate base`) and install the packages there:
+The robot runs in the **Anaconda `base` environment** — no virtual environment needed. If you do not already have Anaconda, download the Linux installer from [anaconda.com/download](https://www.anaconda.com/download) and run it:
+
+```bash
+bash ~/Downloads/Anaconda3-*-Linux-x86_64.sh
+```
+
+> ✅ **At the end of the installer it asks whether to automatically initialize conda / update your shell profile so the `base` environment activates every time you open a terminal. Answer `yes`.** That is what makes `base` active by default, so the robot and its packages are always on the same Python. If you answer `no`, you have to run `conda activate base` by hand in every new terminal before starting the robot, and a `cron` job or desktop launcher will silently use the system Python instead and fail to find the packages.
+
+If you already installed Anaconda and answered `no`, you can turn it on afterwards:
+
+```bash
+conda init bash
+conda config --set auto_activate_base true
+```
+
+Close and reopen the terminal — the prompt should now start with `(base)`.
+
+### 4. Python packages
+
+Install into `base`:
 
 ```bash
 conda activate base
@@ -96,7 +115,7 @@ pip install alpaca-trade-api alpaca-py pytz numpy TA-Lib yfinance SQLAlchemy \
 
 The robot also carries a **dependency bootstrap** at the top of the file: on startup it runs `pip list --format=freeze`, compares against its required set, and silently installs anything missing. The manual install above just saves you the first-run wait.
 
-### 4. API keys
+### 5. API keys
 
 ```bash
 export APCA_API_KEY_ID="your_key_here"
@@ -106,7 +125,7 @@ export APCA_API_BASE_URL="https://paper-api.alpaca.markets"   # paper trading
 
 Put these in `~/.bashrc` so they survive a reboot. **Start on paper.** Switch the base URL to `https://api.alpaca.markets` only after you have watched it trade for a while.
 
-### 5. Optional environment variables
+### 6. Optional environment variables
 
 | Variable | Default | Purpose |
 |---|---|---|
