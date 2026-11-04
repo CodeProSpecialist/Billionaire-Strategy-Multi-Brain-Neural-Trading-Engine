@@ -30,7 +30,7 @@ Every buy order has to survive a committee. A timing brain scores it, a day-trad
 | | |
 |---|---|
 | **Broker** | Alpaca (paper or live) — market orders only, no resting limit orders |
-| **Universe** | 84 technology, computer and consumer-electronics brands (NASDAQ + NYSE), mid cap and up — scanned and ranked every cycle, **top 25** eligible to buy |
+| **Universe** | 83 technology, computer and consumer-electronics brands (NASDAQ + NYSE), mid cap and up — scanned and ranked every cycle, **top 25** eligible to buy |
 | **Buy window** | **10:30–11:30 AM ET only**, and only when the latched regime is bullish or sideways |
 | **Entry signal** | Chandelier Exit (22, 3) direction flip + MACD(12,26,9) histogram reversal off the trough, confirmed on the first reversing bar |
 | **Exit signal** | CE flip, MACD histogram climax, chandelier ATR trail, profit monitor giveback, round-trip rescue, hard stop |
@@ -198,7 +198,7 @@ The amber state matters: without it, a bearish day and a hung robot look identic
 
 **Regime is measured, not glanced at.** From **10:00 to 10:30 ET** the robot samples the SPY + VIX regime repeatedly and, at 10:30, latches the **majority verdict** for the rest of the session. A split decision breaks toward the more conservative regime. The latch is frozen — the robot cannot talk itself into buying at 11:15 because SPY twitched across its 20-day SMA.
 
-> **Backtest caveat:** the playbook's published +0.11%/trade figure was measured on the **Nasdaq-100**. The live universe is now the 84-name tech+electronics list, which that backtest does not cover — treat the figure as historical context for a different universe, not as a forecast for this one. Set `PLAYBOOK_NDX_UNIVERSE_SOURCE = 'ndx100'` to return to the backtested configuration.
+> **Backtest caveat:** the playbook's published +0.11%/trade figure was measured on the **Nasdaq-100**. The live universe is now the 83-name tech+electronics list, which that backtest does not cover — treat the figure as historical context for a different universe, not as a forecast for this one. Set `PLAYBOOK_NDX_UNIVERSE_SOURCE = 'ndx100'` to return to the backtested configuration.
 
 **Wide scan, narrow buy list.** The whole universe is measured and scored every cycle — nothing is skipped — but only the **top 25** are eligible to be bought. Ranking uses the operator composite (relative dollar volume, 20-day momentum, market-cap proxy), z-scored across the candidates so no one factor's raw units dominate, and is applied *after* the liquidity and momentum filters so the 25 slots go to names that already qualify. A name ranked 26th is not bought even with a perfect setup, and the leaders will tend to recur day to day — that is what ranking does.
 
@@ -396,7 +396,7 @@ The constants live near the top of the `.py` file; the dashboard-editable ones a
 | `PRIMARY_DEPLOYMENT_REGIMES` | `('bull','sideways')` | Regimes allowed to buy; everything else buys nothing |
 | `REGIME_SAMPLE_START_ET` | `10:00` | Regime sampling begins |
 | `REGIME_ASSESS_ET` | `10:30` | Majority verdict is latched for the session |
-| `PLAYBOOK_NDX_UNIVERSE_SOURCE` | `tech` | `tech` = 84 tech+electronics names, `ndx100` = full Nasdaq-100 |
+| `PLAYBOOK_NDX_UNIVERSE_SOURCE` | `tech` | `tech` = 83 tech+electronics names, `ndx100` = full Nasdaq-100 |
 | `NDX_TOP_N_MODE` | `armed` | `armed` = only the top-ranked names may be bought, `off` = whole universe |
 | `NDX_TOP_N` | `25` | How many ranked names are eligible to buy |
 | `EARLY_MORNING_CUTOFF_ET` | `10:30` | When the early gate opens fully |
