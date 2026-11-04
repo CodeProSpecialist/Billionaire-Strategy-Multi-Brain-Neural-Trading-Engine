@@ -1,516 +1,375 @@
 # 🤖 Billionaire Strategy Multi-Brain Neural Trading Engine
 
-> **Machine learning where it matters most: making the BUY decision.**
+> **A single-file Python day-trading robot for Alpaca, with a frozen-foundation neural timing brain, a fleet of specialist brains that must agree before capital moves, and a real-time 1080p operations dashboard.**
 
-**Machine Learning Powered Market Intelligence for Smarter BUY Decisions**
+Every buy order has to survive a committee. A timing brain scores it, a day-trade brain checks the chart, a risk sentinel checks the book, a correlation guard checks the sector, a manager brain casts the deciding vote — and a pre-trade backtest replays the robot's own entry and exit rules on that symbol's recent history before a dollar is committed.
 
-Millionaire Stock Trading Robot Expert is an advanced Python-based automated trading system designed to put maximum intelligent analysis into every BUY decision.
+![Dashboard overview](docs/images/00-dashboard-1080p.png)
 
-The future selling price of a stock is impossible to know in advance. Instead of pretending otherwise, this robot focuses its machine learning where it can be most useful:
-
-> *Find the strongest buying opportunities using everything the market is telling us right now.*
+<sub>*Screenshots throughout this README are captured from the real `alpaca_dashboard_v18.html` at 1920×1080 running against a simulated market feed. The layout, indicators, and computed values are genuine; the account balances, symbols, and P&L are sample data, not a trading record.*</sub>
 
 ---
 
-## 🧠 A Machine-Learning Trading Brain
+## 📑 Contents
 
-The robot uses a TensorFlow/Keras neural network to analyze a rolling 20-day sequence of market conditions and estimate the probability that a potential trade will be profitable.
-
-Its machine-learning brain evaluates multiple technical characteristics, including:
-
-- 📉 RSI / oversold conditions
-- 📈 MACD and signal relationships
-- ⚡ Volatility through ATR
-- 📊 Trading volume
-- 📈 Short-term and medium-term trends
-- 🔄 Recent price returns
-- 📐 SMA20 and SMA50 relationships
-- 🧩 Combinations and patterns across multiple trading days
-
-The model uses a **Conv1D + LSTM neural-network architecture** to identify both short-term patterns and temporal relationships within the 20-day market sequence.
-
-
-System Recommendations: 
-Ubuntu Linux 24.04
-
-16GB RAM 
-
-1 TB Hard Drive or larger. 
-
-1GHZ or faster CPU 
-
-Python 3.13.9
+- [What it does](#-what-it-does)
+- [Requirements](#-requirements)
+- [Install](#-install)
+- [Run it](#-run-it)
+- [The dashboard, tile by tile](#-the-dashboard-tile-by-tile)
+- [The features that actually move the needle](#-the-features-that-actually-move-the-needle)
+- [Configuration reference](#-configuration-reference)
+- [Troubleshooting](#-troubleshooting)
+- [Risk disclaimer](#-risk-disclaimer)
 
 ---
 
-## 🎯 Maximum Effort Into the BUY
+## 🎯 What it does
 
-The robot does not attempt to predict an exact future sell price. Instead, its ML brain asks a more practical question:
-
-> *"Given what we know right now, how favorable is this BUY opportunity?"*
-
-The machine-learning probability is incorporated into the robot's existing BUY scoring system. This allows the Machine Learning brain models to enhance the trading strategy rather than blindly replace it.
-
-The result is a hybrid approach:
-
-**Trading Rules + Technical Analysis + Machine Learning + Risk Controls**
-
----
-
-## 🔄 The Brain Learns From Historical Trades
-
-The ML system trains on historical market data and creates examples based on whether a trade would have ultimately been profitable under the robot's trading/exit logic.
-
-The system also performs chronological walk-forward evaluation to examine how well the learned patterns generalize through time.
-
-After sufficient live trading experience is accumulated, the system can also use the robot's own completed trade outcomes for ongoing maintenance training.
-
----
-
-## 🛡️ Built With Guardrails
-
-The ML brain isn't allowed to immediately take control of live trading. The robot requires a minimum number of completed live trades before allowing the ML system to influence live BUY scoring.
-
-Its ML influence is also deliberately limited, preventing a single neural-network prediction from completely overriding the underlying trading strategy.
-
-If the ML system is unavailable or cannot produce a valid prediction, the robot can fall back to its existing rule-based BUY scoring.
-
----
-
-## 🚀 The Philosophy
-
-> **Don't try to predict the unknowable.**
-
-The market will determine the eventual selling price. The robot's job is to make the best possible BUY decision with the information available at the moment the decision is made.
-
-It continuously combines:
-
-```
-Market Data
-    ↓
-Technical Indicators
-    ↓
-20-Day Market Pattern
-    ↓
-Machine-Learning Probability
-    ↓
-BUY Score Enhancement
-    ↓
-Higher-Quality Opportunity Selection
-```
-
----
-
-Version 17 is a multi-layered Alpaca trading system that behaves less like a single algorithm and more like a tiny **investment committee** where everybody has an opinion — and somebody is always trying to stop somebody else from buying something.
-
-Market-regime detection. Technical-analysis strategy. Machine-learning trade intelligence. Risk brains. Portfolio controls. Trade governors. Per-symbol performance tracking. Profit monitoring. Blacklists. And an actual **Brain Trading Floor** where the system records what its various decision-makers are thinking.
-
-And yes...
-
-**It has a Chair.** 🧠
-
----
-
-## ⭐ The Reviewer Verdict
-
-### ★★★★½ — *"This robot has trust issues, and that's probably a good thing."*
-
-The most impressive thing isn't any individual indicator.
-
-It's the number of times this robot effectively asks:
-
-> **"Are you SURE we should do this?"**
-
-A potential trade doesn't simply stroll into the portfolio. It has to survive:
-
-- market-regime analysis →
-- technical filters →
-- momentum checks →
-- multi-timeframe confirmation →
-- risk controls →
-- symbol-performance checks →
-- the brain suite →
-- and finally, the Chair.
-
-And if the market has decided to behave like a burning dumpster? The robot has several mechanisms specifically designed to say:
-
-> **"Nope."**
-
-That's a refreshing philosophy for an automated trading system.
-
----
-
-## 💡 Why This Robot Exists
-
-Every day, the S&P 500 offers thousands of opportunities — and thousands of traps. Most humans can't watch 500 tickers at once. Most bots can't *think* while they watch. This one does **both**.
-
-The Billionaire Strategy Multi-Brain Neural Trading Engine is a **fully autonomous, self-learning, self-defending day-trading robot** that plugs into your Alpaca brokerage account, scans the entire NASDAQ + S&P 500 universe in real time, and executes with the discipline of a hedge-fund quant desk — all from a **single Python file** you can read, audit, and own.
-
-No cloud lock-in. No subscription. No black box.
-
-> **Just your keys, your capital, and a robot that works while you sleep, work, or live your life.**
-
----
-
-## 🧠 Six Brains Walk Into a Trading Floor...
-
-Instead of pretending one indicator can understand the market, Version 17 divides the problem across a **committee of specialists**, each with a job, each casting a vote, all coordinated by a deterministic "Chair" that only greenlights a trade when the evidence has been **dependability tested**.
-
-| Brain | Nickname | What It Does |
-|---|---|---|
-| **A — ML Brain** | *The Forecaster* | Conv1D + dual-LSTM deep neural network trained on 32 technical features. Predicts win probability and nudges every buy score by up to ±1.5. |
-| **B — Risk Brain** | *The Paranoid Accountant* | 12-feature network that evaluates margin ratio, exposure, buying-power headroom, cash, position count, unrealized P/L, session P/L, consecutive losses, VIX, regime, and recent churn. Frozen hand-designed danger detectors sit underneath the trainable layers. Artificial intelligence — but first let's make sure we aren't doing anything stupid. |
-| **C — Backtest Brain** | *The Historian* | Doesn't trust a strategy merely because it sounds good. It wants historical evidence. Replays five years against the *actual* live exit rules and vetoes if the regime-weighted win rate drops under 50%. |
-| **D — Portfolio Manager** | *The Allocator* | Because buying a great stock can still be a terrible idea if the portfolio is already overloaded. Reads ten trajectory features and dynamically scales size, aggression, and concentration. |
-| **E — Chair** | *The Decider* | The final meeting. Gathers the votes, approves or denies, and lets D's multiplier set the size. Any DENY = no trade. |
-| **F — Bullish Picker** | *The Optimist* | 12-feature bullishness network with live news sentiment across ~150 keywords. Bumps buy score up to +0.5 — but only for names it actually believes in. |
-
-Above them all: the **Brain Trading Floor**, a shared message bus where every brain logs its votes, lessons, and observations — streamed straight to your dashboard like a trading pit you can *watch*.
-
----
-
-## 🕵️ The Robot Doesn't Just Buy Dips
-
-The name might suggest **BUY LOWEST PRICE**. Version 17 is considerably more selective.
-
-The system checks recent momentum and contains a **falling-knife filter** designed to reject stocks that are declining across multiple recent windows rather than treating every decline as an attractive dip.
-
-- A dip is: *"This thing went down."*
-- A falling knife is: *"This thing went down, and appears extremely enthusiastic about continuing."*
-
-> **The robot would prefer the first one.**
-
----
-
-## 📐 Technical Analysis Gets Dependability Tested
-
-Version 17 doesn't accept a technical signal because an indicator flashes green. Every signal is **dependability tested** against additional conditions before it's allowed to influence a trade.
-
-The system uses **RSI, MACD, momentum, volume, ATR, Chandelier Exit, multi-timeframe confirmation, market regime, and VIX**.
-
-The Chandelier signal is particularly interesting. A Chandelier cross by itself isn't enough. The system requires confirmation from **at least two of three**:
-
-1. Rising short-term price
-2. Volume support
-3. Positive momentum / MACD confirmation
-
-Only then does the signal receive additional buy-score weight.
-
-> **"Congratulations, stock. You produced a signal."**
-> **"Now let's dependability test it."**
-
-That is a very different philosophy from blindly trusting a single indicator.
-
----
-
-## 🎯 Two Entry Paths, One Discipline
-
-### Path 1: The Dip-Buy Sniper
-
-When quality stocks stumble, this robot pounces. Every candidate is scored on **RSI, MACD, SMA, ATR, Chandelier crossovers, and 2-day momentum**. Only names that survive the full gauntlet — ML approval, backtest veto, risk clearance, bullish confirmation, timing gate — reach the Chair for final judgment.
-
-### Path 2: The Bull-Market Hunter
-
-When the regime turns bullish between **10:02 AM and 3:35 PM ET**, a second engine wakes up. It doesn't say *"SPY is going up. Buy everything."* It stalks each candidate live for **180 seconds**, requiring multiple upward price movements, positive net return during the monitoring window, MACD confirmation, RSI above threshold, and volume confirmation.
-
-That's basically the robot standing outside the nightclub saying:
-
-> **"I know you're bullish. But are you bullish enough?"**
-
-**Both paths respect the golden rule:** *Never trade the first 35 minutes of noise.* A hard **10:05 AM Eastern block** keeps your robot out of the opening chop.
-
----
-
-## 🛑 The Trade Governor — The Grown-Up in the Room
-
-The robot has an account-wide **Trade Governor**.
-
-- Losing streak of **5 consecutive losses** → 30-minute cooldown.
-- Session profit of **+3%** → daily profit lock, done for the day.
-
-Most humans say: *"I'm down five trades. I need to make it back."*
-
-The robot says: **"You've lost five in a row. Go sit in the corner."**
-
-And when it hits the daily profit target: **"We're up 3%. Everybody go home."**
-
-Not particularly glamorous. But disciplined.
-
----
-
-## 🚫 The Robot Can Ignore Losing Stocks
-
-Version 17 tracks performance at the **individual-symbol level**. If a stock develops a sufficiently poor combination of closed-trade history, negative net P/L, and low win rate, the robot **temporarily mutes it** for 24 hours rather than repeatedly throwing new trades at the same problem.
-
-So the robot can effectively say: **"You've had your chance."**
-And later: **"Fine. We'll reconsider you."**
-
-That's much more interesting than a static blacklist.
-
----
-
-## 🧮 Kelly Sizing — But Only Half of It
-
-Once a symbol has closed **10+ trades** with at least one winner and one loser, the robot switches into **Half-Kelly mode** — the same mathematical framework used by legendary investors to maximize long-term compounding.
-
-The important word here is: **Half.**
-
-Rather than going full mathematical cowboy, the implementation deliberately halves the classic Kelly fraction to reduce estimation error from relatively small samples. Capped at **5% of equity per position** for airtight safety.
-
-> *"The math says we can bet this much."*
-> *"Okay."*
-> **"How about half?"**
-
-That is probably the more comfortable conversation.
-
----
-
-## 🤖 Machine Learning — With a Seatbelt
-
-The Forecaster (Brain A) is **pretrained on ~20,000 synthetic examples** at first launch, then **retrained daily at 5:00 PM ET on 15,000 fresh examples** from your actual live trades. Every day it gets sharper.
-
-The system records feature snapshots, win-probability predictions, per-symbol sizing adjustments, entry logs, and exit logs into a persistent SQLite trade database. It attempts to learn from what actually happened rather than relying exclusively on static rules.
-
-Every Sunday at 22:00 ET, the **Backtest Brain** silently replays two years of daily bars through the exact same strategy rules — self-auditing, self-tuning.
-
-The **BrainTrustTracker** keeps rolling accuracy scores for every brain across 50/200/1000-trade windows. Brains that stop performing get demoted. Brains that shine get more authority.
-
-> **This robot doesn't just trade. It grows.**
-
----
-
-## 🧯 Risk Management Isn't Optional
-
-One particularly good engineering decision is the treatment of **ATR-based stop risk**.
-
-The hard-stop calculation uses the **ATR captured at entry** — not blindly allowing a later volatility spike to widen the stop. If ATR suddenly expands after entry, letting the stop distance expand with it could produce a much larger loss than position sizing assumed. **The stop tightens rather than widens.**
-
-That's the kind of detail that tells you this project isn't merely an indicator experiment. Someone has actually been thinking about what happens when the market stops cooperating.
-
-Exits are a **layered defense-in-depth stack**:
-
-1. Broker-side trailing stop
-2. Chandelier ATR trailing stop (ratchets with peak)
-3. Profit-monitor round-trip rescue (arms at +0.2%, exits at breakeven)
-4. Hard 2×ATR disaster stop
-5. Chandelier daily SELL + RSI-falling → immediate escalation exit
-6. Chandelier daily SELL + RSI stable → ultra-tight 0.25% stop
-7. **Bad-news stop tightener** — if Brain F detects negative news sentiment on a name you own, the stop tightens automatically. Your robot *reads the news* and reacts.
-
-Every exit rule is **hard-coded and rules-based**. Brains only influence *entries* and *sizing* — never the exits. Discipline is non-negotiable.
-
----
-
-## 🛡️ Full Safety Stack
-
-| System | What It Protects You From |
+| | |
 |---|---|
-| **BlacklistManager** | Auto-adds losing symbols to a 72-hour cooldown, plus a permanent do-not-touch list. |
-| **TradeGovernor** | 5 losses in a row → 30-min cooldown. +3% for the day → daily profit lock. |
-| **PerSymbolPerformance** | Mutes any name with <30% win rate after 5+ trades with negative PnL for 24 hours. |
-| **Early-Morning Gate** | Hard blocks the toxic 9:30–10:05 ET window. |
-| **KSB Serializer** | One-worker queue prevents catastrophic thread leaks. Ever. |
-| **Fail-Open Guards** | If a brain is training, the robot degrades gracefully — never freezes, never stalls. |
-| **Falling-Knife Filter** | Rejects stocks that are enthusiastically continuing to fall. |
-| **ATR-at-Entry Stop** | Stops tighten, never widen, when volatility spikes. |
+| **Broker** | Alpaca (paper or live) — market orders only, no resting limit orders |
+| **Universe** | NASDAQ-listed mid- and large-cap technology names, plus an S&P 500 fallback pool |
+| **Entry signal** | Chandelier Exit (22, 3) direction flip + MACD(12,26,9) histogram reversal off the trough, confirmed on the first reversing bar |
+| **Exit signal** | CE flip, MACD histogram climax, chandelier ATR trail, profit monitor giveback, round-trip rescue, hard stop |
+| **Hold time** | Minutes, not days — most winners are 5-minute moves; a runner is allowed up to an hour while RSI stays elevated |
+| **Overnight** | Anything green by a penny is sold before the bell; losers may carry up to two trading days |
+| **Data** | Alpaca IEX daily bars (fast path), yfinance for intraday 1m/5m and fallback |
+| **Dashboard** | WebSocket on `127.0.0.1:8765`, 1 Hz, 27 live tiles |
 
 ---
 
-## 🖥️ The Dashboard — Where It Gets Genuinely Fun
+## 🧰 Requirements
 
-Open `alpaca_dashboard.html` in any browser. No install. No server dance. **Plug in and watch.**
-
-- 💰 **Account** · 📈 **Market Regime** · 🛑 **Trade Governor** · 🧠 **Brain Health**
-- 📊 **Live Positions** with real-time P&L
-- 💎 **Profit Monitor** (ARMED / TOUCHED / WAITING)
-- 📋 **Recent Trades**
-- ⏳ **Temporary Blacklist** · 🚫 **Permanent Blacklist** · 🔇 **Muted Symbols**
-- 🧠 **Daytrade Brain — Symbol Scans**: MACD, RSI, momentum, trend, bull/bear flags, chandelier state, last BUY/SELL, win probability
-- 👁 **Monitored Symbols** — the entire watchlist, live, cached at 60s
-- 🧠 **Brain Suite** status bar
-- 🧠 **Brain Trading Floor** — live terminal with commands: `status`, `pause`, `resume`, `sell_all`, `blacklist`, `unblacklist`
-- 🧾 **Decision Log** — records candidate decisions and the gate/reason responsible for the verdict
-
-That Decision Log is designed to answer a question many trading bots completely fail to answer:
-
-> **"Why didn't you make that trade?"**
-
-Excellent for debugging. Excellent for trust.
+| | |
+|---|---|
+| OS | Ubuntu Linux 24.04 (any modern Linux works) |
+| Python | 3.11 – 3.13 |
+| RAM | 16 GB recommended (TensorFlow pretraining is the peak) |
+| Disk | 20 GB free for models, caches, and the SQLite trade database |
+| GPU | Optional — NVIDIA CUDA is auto-detected and the TensorFlow variant is swapped to match |
+| Account | Alpaca API key + secret (start with paper) |
 
 ---
 
-## 🧠 The Robot Knows When Its Brains Aren't Ready
+## 📦 Install
 
-While the brains are still training, the system temporarily relies on the technical-indicator strategy rather than pretending its ML components are already fully trained. The dashboard exposes the training state and posts a message explaining when decisions are being made by technical indicators while the brains finish training.
+### 1. System packages and TA-Lib
 
-Much better than: *"MODEL FILE EXISTS = AI IS READY."*
-
----
-
-## 🏆 What Makes Version 17 Interesting?
-
-It's not that the robot has *RSI + MACD + ML + AI + VIX + ATR*. Lots of projects accumulate indicators until the code looks like a giant, colorful, decorated basket of flowers.
-
-What's interesting is the **layering**:
-
-```
-Market decides the environment.
-        ↓
-Strategy finds candidates.
-        ↓
-Technical signals are dependability tested.
-        ↓
-Momentum and multi-timeframe filters eliminate weak setups.
-        ↓
-Risk systems evaluate the portfolio.
-        ↓
-Per-symbol intelligence evaluates historical performance.
-        ↓
-Brain suite votes.
-        ↓
-Chair makes the final decision.
-        ↓
-Position sizing determines how much capital is actually committed.
-        ↓
-Profit and risk systems manage the position.
-        ↓
-Results feed the intelligence system.
-        ↓
-The robot learns from what happened.
-```
-
-That's a much more ambitious architecture than a simple buy/sell script.
-
----
-
-## 😂 The Most Entertaining Part
-
-Imagine explaining this robot to a stock:
-
-> **Stock:** "I went up 2%!"
-> 
-> **Robot:** "Interesting."
-> 
-> **Stock:** "RSI is strong!"
-> 
-> **Robot:** "We'll see."
-> 
-> **Stock:** "MACD crossed!"
-> 
-> **Robot:** "Volume?"
-> 
-> **Stock:** "...yes."
-> 
-> **Robot:** "Momentum?"
-> 
-> **Stock:** "...yes."
-> 
-> **Robot:** "Market regime?"
-> 
-> **Stock:** "Bullish."
-> 
-> **Robot:** "Risk Brain?"
-> 
-> **Risk Brain:** "I'm uncomfortable."
-> 
-> **Chair:** "Denied."
-> 
-> **Stock:** "WHY?!"
-> 
-> **Robot:** "Because you had earnings coming."
-> 
-> **Stock:** "...oh."
-
-That's Version 17.
-
-It doesn't desperately need to trade.
-
-> **It needs a reason to trade.**
-
----
-
-## ⚡ Quick Start — Trading in Under a Minute
+TA-Lib is the one dependency pip cannot install on its own — it needs the C library first.
 
 ```bash
-
-step 1: download and install the 
-Anaconda environment for python3 
-and select YES to auto load the base environment. 
-
-save the following Alpaca API keys to ~/.bashrc in 
-the Linux home folder: 
-
-export APCA_API_KEY_ID='your_key'
-export APCA_API_SECRET_KEY='your_secret_key'
-export APCA_API_BASE_URL='https://paper-api.alpaca.markets'  # paper trading ( not using real money ) 
-# ( pick one URL for trading )
-# for live trading with real money uncomment the line below:
-# export APCA_API_BASE_URL='https://api.alpaca.markets'
-
-then reboot the computer to reload the .bashrc variables 
-
-python3 billionaire_strategy_buy_lowest_price_stock_market_robot.py
+sudo apt update
+sudo apt install -y build-essential wget python3-pip python3-venv git
 ```
 
-On first launch the bot will:
+```bash
+# Build the TA-Lib C library
+cd /tmp
+wget https://github.com/ta-lib/ta-lib/releases/download/v0.6.4/ta-lib-0.6.4-src.tar.gz
+tar -xzf ta-lib-0.6.4-src.tar.gz
+cd ta-lib-0.6.4
+./configure --prefix=/usr
+make
+sudo make install
+sudo ldconfig
+```
 
-1. Auto-install every missing dependency.
-2. Detect your NVIDIA GPU and swap `tensorflow` ↔ `tensorflow-cpu` on the fly.
-3. Scan the current 504-ticker S&P 500 universe.
-4. Pretrain every brain that doesn't already have a saved model on disk.
-5. Start trading.
+### 2. Clone the repo
 
-**Cold start: a few minutes. Warm start: seconds.**
+```bash
+git clone https://github.com/CodeProSpecialist/Billionaire-Strategy-Multi-Brain-Neural-Trading-Engine.git
+cd Billionaire-Strategy-Multi-Brain-Neural-Trading-Engine
+```
 
-Then open `alpaca_dashboard.html` and watch it work.
+### 3. Python environment
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install alpaca-trade-api alpaca-py pytz numpy TA-Lib yfinance SQLAlchemy \
+            ratelimit pandas-market-calendars pandas schedule websockets requests \
+            tensorflow backtrader
+```
+
+The robot also carries a **dependency bootstrap** at the top of the file: on startup it runs `pip list --format=freeze`, compares against its required set, and silently installs anything missing. The manual install above just saves you the first-run wait.
+
+### 4. API keys
+
+```bash
+export APCA_API_KEY_ID="your_key_here"
+export APCA_API_SECRET_KEY="your_secret_here"
+export APCA_API_BASE_URL="https://paper-api.alpaca.markets"   # paper trading
+```
+
+Put these in `~/.bashrc` so they survive a reboot. **Start on paper.** Switch the base URL to `https://api.alpaca.markets` only after you have watched it trade for a while.
+
+### 5. Optional environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `BOT_DASHBOARD_HOST` | `127.0.0.1` | Dashboard WebSocket bind address |
+| `BOT_DASHBOARD_PORT` | `8765` | Dashboard WebSocket port |
+| `BOT_DASHBOARD_TOKEN` | *(none)* | Shared secret; the dashboard must pass `?token=` to connect |
+| `_NO_COLOR` | *(unset)* | Set to `1` to strip ANSI color from terminal output |
 
 ---
 
-## 🔥 Version 17 — What Just Landed (Aug 29, 2026)
+## ▶️ Run it
 
-- **Hard 10:05 AM ET buy block** — no more opening-noise trades, ever.
-- **2-day momentum gate** — buy only when the tape is already turning up.
-- **Half-Kelly per-symbol sizing** — capped at 5% for safety.
-- **Chandelier crossover scoring on both sides** — with 3-of-N confirmation guards.
-- **Per-symbol scanner surface** with live TA snapshots and monitored-symbols dashboard cards.
-- **Bulletproof KSB serializer**, network-timeout guards, settings persistence — battle-tested stability.
+```bash
+source venv/bin/activate
+python3 billionaire_strategy_buy_lowest_price_stock_market_robot_v18.py
+```
+
+Then open the dashboard — it is a plain file, no web server needed:
+
+```bash
+xdg-open alpaca_dashboard_v18.html
+```
+
+If the dashboard is on another machine, or you changed the port:
+
+```
+alpaca_dashboard_v18.html?ws=ws://192.168.1.40:8765
+alpaca_dashboard_v18.html?wsPort=8765&token=YOUR_TOKEN
+```
+
+**First run takes a while.** The brains pretrain before the first trade: Brain B (risk) and Brain D (portfolio) on 20,000 synthetic snapshots each, then the timing brain's head on real historical sequences, then Brain F (bullish picker). On CPU this is tens of minutes. It happens once — the models are cached on disk and reloaded after that.
+
+> ⚠️ The dashboard listens on port **8765**, the same port as the Kalshi robot. Do not run both bots on the same host at the same time.
 
 ---
 
-## 🌟 Why Traders Choose This Engine
+## 🖥️ The dashboard, tile by tile
 
-- ✅ **One file. Yours to read, own, and modify.**
-- ✅ **Six neural brains, one deterministic Chair.**
-- ✅ **Every signal dependability tested before it can influence a trade.**
-- ✅ **Learns from your trades, every single day.**
-- ✅ **Layered exits. No brain ever overrides a stop.**
-- ✅ **Live dashboard. Live control. Total transparency.**
-- ✅ **Half-Kelly math. Governor protection. Blacklist automation.**
-- ✅ **Falling-knife filter. ATR-at-entry stops. Bad-news tightening.**
-- ✅ **Auto-installs. Auto-detects your GPU. Auto-restarts once when it needs to.**
-- ✅ **Paper-trade first. Go live when *you* say so.**
+27 tiles, all driven by one 1 Hz WebSocket snapshot. Every number you see below is computed server-side in the bot and pushed to the browser — nothing is calculated in the page except the drawing.
+
+### Owned Positions Summary
+
+Equity, exposure, open count, unrealized P&L, and a best/worst line, with the lead position's full chart beside a sortable entry/live/stop/P&L table. This is the tile to glance at if you only have five seconds.
+
+![Owned positions summary](docs/images/02-owned-positions-summary.png)
+
+### Position Charts — 1m candles, Chandelier Exit, MACD, RSI
+
+The heart of the UI, and the tile that mirrors a TradingView layout. Each owned position gets live 1-minute candlesticks with the Chandelier Exit (22,3) step line drawn in its active direction, **Buy** and **Sell** flags printed at every CE flip, the MACD(12,26,9) histogram with both lines underneath, and the live RSI(14) read in the header. Symbols the robot is watching but does not own are rendered too, tagged `WATCHING TO BUY`.
+
+![Position charts](docs/images/09-position-charts.png)
+
+### Account · Market Regime · Trade Governor · KSB Brains Health
+
+The header row. Account carries equity, buying power, cash, exposure, effective BP, and margin health. Market Regime shows the live bull/bear/sideways/panic call with VIX, the weak-bull downgrade flag, and the playbook that regime selects. Trade Governor shows whether new entries are permitted at all, the consecutive-loss count, cooldown, and daily profit lock. KSB Brains Health is the one-line status of all seven specialist brains plus the 24-hour retrain scheduler.
+
+| | |
+|---|---|
+| ![Account](docs/images/03-account.png) | ![Market regime](docs/images/04-market-regime.png) |
+| ![Trade governor](docs/images/05-trade-governor.png) | ![KSB brains health](docs/images/06-ksb-brains-health.png) |
+
+### Nasdaq Bull-Day Odds
+
+The probability that today closes green for the Nasdaq, built from trailing 12-month QQQ closes, broken out by weekday, with the live intraday percentage and an explicit reliability warning. The weekday edge is small and the tile says so — it is a tie-breaker, not a signal.
+
+![Nasdaq bull-day odds](docs/images/07-nasdaq-bull-day-odds.png)
+
+### Nasdaq Trading Days — Last 12 Months
+
+Twelve months of trading days as a heat calendar. Brightness is the size of the move, green is up, red is down, the best two weekdays by two-year average return are highlighted, and today is ringed. It makes seasonal and weekday patterns visible at a glance instead of buried in a backtest log.
+
+![Nasdaq trading days calendar](docs/images/08-nasdaq-trading-days-calendar.png)
+
+### Live Positions · Profit Monitor · Recent Trades
+
+Per-position entry, live price, gain, and chandelier stop. The Profit Monitor tracks peak price and whether the trailing logic has **armed**, **touched** profit (sub-arm but printed a gain — a round-trip rescue candidate), or is still watching. Recent Trades is the last 25 fills straight from the SQLite trade history.
+
+| | | |
+|---|---|---|
+| ![Live positions](docs/images/10-live-positions.png) | ![Profit monitor](docs/images/11-profit-monitor.png) | ![Recent trades](docs/images/12-recent-trades.png) |
+
+### 72h Auto Blacklist · Permanent Blacklist · Muted
+
+Three layers of "do not touch this symbol." A losing close auto-blacklists for 72 hours. The permanent list is yours to curate. Mute is statistical: once a symbol has 5+ trades with negative P&L and a win rate under 30%, it goes quiet for 24 hours. All three are editable from the dashboard.
+
+| | | |
+|---|---|---|
+| ![72h auto blacklist](docs/images/13-auto-blacklist-72h.png) | ![Permanent blacklist](docs/images/14-permanent-blacklist.png) | ![Muted symbols](docs/images/15-muted-symbols.png) |
+
+### Daytrade Brain — Symbol Scans
+
+Every scanned symbol with price, RSI, MACD histogram, momentum, trend direction, the chandelier level, and the day-trade brain's win probability with how many samples back it.
+
+![Daytrade brain symbol scans](docs/images/16-daytrade-brain-scans.png)
+
+### Monitored Symbols
+
+The scanner's live watchlist with the full indicator set, cached so the 1 Hz broadcast stays cheap.
+
+![Monitored symbols](docs/images/17-monitored-symbols.png)
+
+### Profit Monitor Daytrade Tile
+
+Per-position cards: quantity, entry, current, peak, dollar and percent P&L, and sector. Green border for a winner, red for a loser, so a losing book is obvious from across the room.
+
+![Profit monitor daytrade tile](docs/images/18-profit-monitor-daytrade.png)
+
+### Brain Suite (Kalshi-Style Fleet)
+
+The seven specialist brains as cards — volatility regime, capital allocator, profit growth, risk sentinel, correlation guard, day-trade brain, chandelier brain — each with its trained/cold state, its current recommendation, and its update count.
+
+![Brain suite](docs/images/19-brain-suite.png)
+
+### Timing Brain — Frozen Foundation
+
+The neural timing brain's status: foundation layer frozen with a SHA so you can verify it has not drifted, trainable head parameter count, head version, stored sample count, buy threshold, and the last retrain report — accepted or rejected, with win rate, Sharpe, validation loss, max drawdown, and weight drift.
+
+![Timing brain](docs/images/20-timing-brain.png)
+
+### Trade Decision Transcript
+
+The desks arguing, in order, in plain English. Every call, observation, approval, and veto for every candidate, timestamped and attributed to the brain that said it.
+
+![Trade decision transcript](docs/images/21-trade-decision-transcript.png)
+
+### Brain Room — Trading Floor
+
+The robot's memory, and your command line into it. Losing closes post lessons, winning closes post observations, retrains post training notes. You type commands back: `status`, `pause`, `resume`, `sell_all`, `blacklist SOUN 8h`, `unblacklist`, `clear`, `help`.
+
+![Brain room trading floor](docs/images/22-brain-room-trading-floor.png)
+
+### Composite Grade — Ranking, and Buy Orders Placed
+
+Every symbol scored this scan, with the grade broken into its components: brain probability, momentum across 24h/10d/20d/90d, weekday favorability, and prior trade history on that symbol. The second tile freezes the grade as it stood at the moment each buy actually filled — which is what lets you check later whether the grade meant anything.
+
+![Composite grade ranking](docs/images/23-composite-grade-ranking.png)
+
+![Composite grade fills](docs/images/24-composite-grade-fills.png)
+
+### Decision Log
+
+One row per candidate, with the full reason stack from every gate that touched it. When the robot does not buy, this tile tells you exactly which gate stopped it.
+
+![Decision log](docs/images/25-decision-log.png)
+
+### Trade Intelligence
+
+Logged, completed, and open trades; rolling 30-day win rate and average return; model calibration; and the best and worst symbols with their position-size multipliers.
+
+![Trade intelligence](docs/images/26-trade-intelligence.png)
+
+### Settings
+
+Roughly thirty live knobs — manager strictness, chandelier mode and ATR multiple, backtest brain thresholds, Brain B/D/F modes, cooldowns, profit lock, mute thresholds, screener options, playbook toggles. Changes batch and apply on **Save All** with no restart.
+
+![Settings](docs/images/27-settings.png)
+
+### Robot Control
+
+Pause new entries, resume, sell everything at market, or emergency stop (pause plus liquidate). Both destructive buttons confirm first.
+
+![Robot control](docs/images/28-robot-control.png)
 
 ---
 
-## ⭐ Final Score
+## 💡 The features that actually move the needle
 
-| Category | Rating |
-|---|---:|
-| Engineering ambition | ⭐⭐⭐⭐⭐ |
-| Risk architecture | ⭐⭐⭐⭐⭐ |
-| Monitoring / observability | ⭐⭐⭐⭐⭐ |
-| Trading-system complexity | ⭐⭐⭐⭐⭐ |
-| Dependability-testing philosophy | ⭐⭐⭐⭐⭐ |
-| Entertainment value | ⭐⭐⭐⭐⭐ |
-| "Why does this robot have a Board of Directors?" | ⭐⭐⭐⭐⭐ |
+A lot of this robot is instrumentation. These are the parts that change outcomes.
 
-### Overall: **4.5 / 5**
+### 1. The round-trip rescue — the single highest-value fix
 
-> *"Version 17 is what happens when somebody looks at a trading bot and says, 'One strategy isn't enough. Let's give it a market analyst, a risk manager, a portfolio manager, a backtester, a bullish picker, a Chair, a memory system, and a dashboard — and then make all of them argue before buying a stock.'"*
+The profit monitor used to do nothing until a position crossed +0.5%. A trade that ran to +0.35% and reversed was left to the hard stop, and a small winner became a real loser. Now state is seeded on the **first tick**: peak price is tracked from the start, a `touched_profit` flag latches at +0.2%, and if a position that touched profit falls back to breakeven it exits immediately.
 
-**The market has enough risk takers.**
+**Why it matters:** giving back a gain is the most common way a day-trading bot bleeds. This turns a category of losses into scratches. Watch it on the Profit Monitor tile — the yellow `TOUCHED` state is this rule arming.
 
-**This robot is trying to be the one who brings a calculator to the investment meeting.** 🧮🤖📈
+### 2. First-reversing-bar MACD entry, not a confirmed cross
+
+Waiting for a confirmed MACD cross means entering after the move has already extended. This robot triggers on the first bar where the histogram turns up out of the red trough, paired with the Chandelier Exit direction flip. Noisier, earlier, and the entry is nearer the bottom of the dip.
+
+**Why it matters:** for a 5-minute pop, three bars of confirmation is the whole trade.
+
+### 3. Pre-trade backtest on the symbol in front of you
+
+Before any buy, the robot replays its own entry and exit rules on that symbol's recent history — 120 days and 5 days — and vetoes if the regime-weighted win rate falls below 50%. It abstains rather than guessing when there are fewer than 20 samples.
+
+**Why it matters:** it is the difference between "this setup looks good" and "this setup has actually worked on this symbol."
+
+### 4. The early-morning gate
+
+No new entries before 10:05 ET unless the candidate is both below yesterday's close and down at least 2%. The first 35 minutes are thin, volatile, and full of fakeouts; this restricts early buying to genuine overnight dislocations.
+
+**Why it matters:** it removes a whole class of trades that look like momentum at 9:40 and are reversion by 9:55.
+
+### 5. Chandelier ATR trail + bad-news stop tightening
+
+The chandelier stop sits between the deep hard stop and the profit monitor, ratcheting up only, never down. When rolling negative news sentiment on an owned position crosses the threshold, the stop immediately tightens to 0.3% under current price.
+
+**Why it matters:** it defends capital against the single-headline drop that technicals cannot see coming.
+
+### 6. Three layers of "stop trading this"
+
+The 72-hour auto blacklist after a losing close, the statistical mute at 5+ trades with sub-30% win rate, and the Trade Governor's consecutive-loss cooldown and daily profit lock.
+
+**Why it matters:** most bad days are one bad symbol traded repeatedly, or a losing streak the operator did not stop. These stop it without you watching.
+
+### 7. Market orders, always
+
+No resting limit orders. During peak intensity an unfilled limit is a missed trade, and a missed exit is worse than a few cents of slippage.
+
+**Why it matters:** fill certainty beats fill price on a 5-minute hold.
+
+### 8. The frozen foundation
+
+The timing brain's foundation layer is hand-weighted, frozen, and SHA-verified. Only the head retrains. Retrains are evaluated and **rejected** if validation loss, win rate, or drawdown degrade.
+
+**Why it matters:** a model that silently drifts is worse than no model, because you keep trusting it. The Timing Brain tile shows you the SHA and the accept/reject verdict every time.
+
+### 9. The Decision Log
+
+Every candidate, every gate, every reason. When the robot has a quiet day, this is where you find out whether it was correctly cautious or incorrectly throttled.
+
+**Why it matters:** you cannot tune what you cannot see. This is the tile that turns "it barely traded today" into a specific, fixable cause.
+
+---
+
+## ⚙️ Configuration reference
+
+The constants live near the top of the `.py` file; the dashboard-editable ones are in the Settings tile and apply without a restart.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `CHANDELIER_MODE` | `armed` | `armed` / `shadow` / `off` for the ATR trailing stop |
+| `CHANDELIER_ATR_MULT` | `3.0` | ATR multiple below the peak (LeBeau default) |
+| `CHANDELIER_MIN_HOLD_SECS` | `300` | Grace period so entry noise cannot stop you out |
+| `PROFIT_TOUCHED_PCT` | `0.002` | Gain that latches the round-trip rescue |
+| `ROUND_TRIP_EXIT_GAIN` | `0.0` | Exit level once rescue is latched (breakeven) |
+| `BACKTEST_BRAIN_MODE` | `armed` | Pre-trade backtest veto |
+| `BACKTEST_MIN_WIN_RATE` | `0.50` | Regime-weighted win-rate floor |
+| `BACKTEST_MIN_SAMPLES` | `20` | Below this the backtest abstains |
+| `EARLY_MORNING_CUTOFF_ET` | `10:05` | When the early gate opens fully |
+| `EARLY_MORNING_MIN_DROP_PCT` | `0.02` | Required dislocation before the cutoff |
+| `BRAIN_B_MODE` / `BRAIN_B_MIN_SAFE` | `armed` / `0.40` | Risk brain veto and its threshold |
+| `BRAIN_D_MODE` | `shadow` | Portfolio manager — nudges size, never vetoes |
+| `BRAIN_F_MODE` | `armed` | Bullish picker score bump |
+| `BAD_NEWS_STOP_THRESHOLD` | `0.20` | Negative sentiment that tightens the stop |
+| `CONSEC_LOSS_COOLDOWN` | `5` | Losses in a row before a 30-minute cooldown |
+| `DAILY_PROFIT_LOCK_PCT` | `0.03` | Lock the day after +3% on session-start equity |
+| `PERSYMBOL_MUTE_WINRATE` | `0.30` | Mute threshold once a symbol has 5+ trades |
+
+---
+
+## 🔧 Troubleshooting
+
+**Dashboard shows "disconnected"** — the bot is not running, or it is not listening where the page is looking. Check the terminal for the dashboard startup line, then try `alpaca_dashboard_v18.html?ws=ws://127.0.0.1:8765`. If you set `BOT_DASHBOARD_TOKEN`, the page needs `&token=` too (code 4401 means the token is wrong or missing).
+
+**`ImportError: libta_lib.so.0`** — the C library is not installed or `ldconfig` was not run. Redo step 1.
+
+**All brain tiles read "cold" or show dashes** — pretraining has not finished. Watch the terminal; it logs each brain as it completes. The models persist after the first run.
+
+**TensorFlow reinstalls itself on startup** — expected. The bot detects whether an NVIDIA GPU is present and swaps between `tensorflow` and `tensorflow-cpu` before the first import, then restarts itself once with a guard against loops.
+
+**It barely trades** — read the Decision Log tile. Usually it is the early-morning gate, the backtest veto, or the Trade Governor cooldown, and the log names which one.
+
+**Port already in use** — the Kalshi robot uses 8765 too. Run one at a time, or set `BOT_DASHBOARD_PORT`.
 
 ---
 
@@ -520,7 +379,7 @@ This software is not affiliated with or endorsed by Alpaca Securities, LLC.
 
 Automated trading involves substantial financial risk. Past performance, backtest results, machine-learning predictions, technical indicators, or historical expectancy **do not guarantee future results**.
 
-This README describes the architecture and behavior implemented in the source code. It does **not** establish that the strategy is profitable, that it will outperform the market, or that the "Billionaire Strategy" will actually make anyone a billionaire.
+This README describes the architecture and behavior implemented in the source code. It does **not** establish that the strategy is profitable, that it will outperform the market, or that the "Billionaire Strategy" will actually make anyone a billionaire. The screenshots show the dashboard rendered against a simulated feed and are **not** a record of trading results.
 
 Backtests are approximations and cannot reproduce every aspect of live execution, including market impact, liquidity changes, slippage, latency, order rejection, gaps, and intraday price sequencing.
 
@@ -534,7 +393,7 @@ This software is provided on an "as-is" and "use-at-your-own-risk" basis without
 
 ## 📜 Third-Party Libraries and Attributions
 
-Powered by the open-source giants: **alpaca-trade-api**, **alpaca-py**, **NumPy**, **pandas**, **pandas-market-calendars**, **pytz**, **ratelimit**, **schedule**, **SQLAlchemy**, **TA-Lib**, **yfinance**, **TensorFlow / Keras**, **Backtrader**, **importlib_metadata**, **SQLite**, and **CPython**. Each library is the property of its respective copyright holders and is used under the terms of its own upstream license. All trademarks are property of their respective owners.
+Powered by the open-source giants: **alpaca-trade-api**, **alpaca-py**, **NumPy**, **pandas**, **pandas-market-calendars**, **pytz**, **ratelimit**, **schedule**, **SQLAlchemy**, **TA-Lib**, **yfinance**, **TensorFlow / Keras**, **Backtrader**, **importlib_metadata**, **SQLite**, and **CPython**. The Chandelier Exit indicator is Chuck LeBeau's, popularized in Pine Script by **everget**. Each library is the property of its respective copyright holders and is used under the terms of its own upstream license. All trademarks are property of their respective owners.
 
 ---
 
