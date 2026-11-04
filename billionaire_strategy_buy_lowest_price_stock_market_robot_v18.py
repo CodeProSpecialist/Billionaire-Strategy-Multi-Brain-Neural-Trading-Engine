@@ -11279,10 +11279,19 @@ class _YFGate:
 
     def __init__(self, calls_per_min, min_interval=0.0):
         self.capacity = calls_per_min
+        self.base_capacity = calls_per_min
         self.min_interval = min_interval
+        self.base_min_interval = min_interval
         self._times = deque()
         self._last_call = 0.0
         self._lock = threading.Lock()
+        # Reactive backoff state. The limits above are PROACTIVE — they keep us
+        # polite in normal conditions but do nothing once yfinance has actually
+        # started refusing us. With the brains now observing around the clock,
+        # a throttle that never backs off would hammer a closed door for hours.
+        self._penalty_until = 0.0     # monotonic deadline; no requests before it
+        self._consecutive_429 = 0
+        self._last_429 = 0.0
 
     def acquire(self):
         """Block until it is polite to issue the next yfinance request."""
@@ -11292,9 +11301,10 @@ class _YFGate:
                 while self._times and now - self._times[0] >= 60.0:
                     self._times.popleft()
 
-                since_last = now - self._last_call
-                if self.min_interval and since_last < self.min_interval:
-                    wait = self.min_interval - since_last          # spacing
+                if now < self._penalty_until:
+                    wait = self._penalty_until - now    # serving a backoff
+                elif self.min_interval and (now - self._last_call) < self.min_interval:
+                    wait = self.min_interval - (now - self._last_call)   # spacing
                 elif len(self._times) >= self.capacity:
                     wait = 60.0 - (now - self._times[0]) + 0.01    # window cap
                     logging.info(f"yfinance gate: at {self.capacity}/min cap, waiting {wait:.1f}s")
@@ -11305,6 +11315,63 @@ class _YFGate:
             # Sleep OUTSIDE the lock so other threads can drain expired slots.
             time.sleep(min(wait, 5.0))
 
+    def note_rate_limited(self, source=""):
+        """Call when yfinance signals throttling (429 / YFRateLimitError).
+
+        Backs off exponentially (30s, 60s, 120s ... capped at 15 min) and
+        tightens the ongoing rate so we ease off rather than resuming at full
+        speed the instant the penalty expires.
+        """
+        with self._lock:
+            now = time.monotonic()
+            # Treat hits more than 10 minutes apart as a fresh incident.
+            if now - self._last_429 > 600:
+                self._consecutive_429 = 0
+            self._consecutive_429 += 1
+            self._last_429 = now
+            delay = min(30.0 * (2 ** (self._consecutive_429 - 1)), 900.0)
+            self._penalty_until = max(self._penalty_until, now + delay)
+            # Tighten: drop capacity toward a floor, widen spacing toward a cap.
+            self.capacity = max(10, int(self.base_capacity * (0.6 ** self._consecutive_429)))
+            self.min_interval = min(5.0, max(self.base_min_interval,
+                                             self.base_min_interval * (1.8 ** self._consecutive_429)))
+        logging.warning(
+            "yfinance RATE LIMITED%s — backing off %.0fs (hit #%d); "
+            "rate tightened to %d/min, %.2fs spacing",
+            f" [{source}]" if source else "", delay, self._consecutive_429,
+            self.capacity, self.min_interval)
+
+    def note_success(self):
+        """Call after a clean yfinance response — recovers gradually."""
+        with self._lock:
+            if self._consecutive_429 == 0 and self.capacity >= self.base_capacity:
+                return
+            now = time.monotonic()
+            # Only start recovering once we've been clean for 2 minutes.
+            if now - self._last_429 < 120:
+                return
+            self._consecutive_429 = 0
+            if self.capacity < self.base_capacity:
+                self.capacity = min(self.base_capacity, int(self.capacity * 1.5) + 1)
+                self.min_interval = max(self.base_min_interval, self.min_interval / 1.5)
+                recovered = (self.capacity, self.min_interval)
+            else:
+                recovered = None
+        if recovered:
+            logging.info("yfinance gate recovering: now %d/min, %.2fs spacing",
+                         recovered[0], recovered[1])
+
+    def status(self):
+        with self._lock:
+            now = time.monotonic()
+            return {
+                'capacity': self.capacity,
+                'base_capacity': self.base_capacity,
+                'min_interval': round(self.min_interval, 2),
+                'penalty_secs_left': max(0.0, round(self._penalty_until - now, 1)),
+                'consecutive_429': self._consecutive_429,
+            }
+
     def used(self):
         with self._lock:
             now = time.monotonic()
@@ -11314,6 +11381,39 @@ class _YFGate:
 
 
 yf_gate = _YFGate(YF_CALLS_PER_MIN, YF_MIN_INTERVAL)
+
+
+def _is_rate_limit_error(exc):
+    """Does this exception mean yfinance/Yahoo is throttling us?
+
+    yfinance raises YFRateLimitError on newer versions, but older ones (and
+    the requests layer underneath) surface the same condition as a generic
+    exception whose text mentions 429 or 'too many requests'. Match on both
+    so the backoff fires regardless of which version is installed.
+    """
+    try:
+        if type(exc).__name__ in ('YFRateLimitError', 'TooManyRedirects'):
+            return type(exc).__name__ == 'YFRateLimitError'
+        msg = str(exc).lower()
+        return ('429' in msg
+                or 'too many requests' in msg
+                or 'rate limit' in msg
+                or 'ratelimit' in msg)
+    except Exception:
+        return False
+
+
+def yf_note_result(exc=None, source=""):
+    """Report a yfinance outcome to the gate so it can back off or recover."""
+    try:
+        if exc is not None and _is_rate_limit_error(exc):
+            yf_gate.note_rate_limited(source)
+            return True
+        if exc is None:
+            yf_gate.note_success()
+    except Exception:
+        pass
+    return False
 
 
 def _yf_kwargs_to_alpaca_daily_days(kwargs):
@@ -11399,8 +11499,14 @@ def yf_history(symbol, **kwargs):
 
     # ---- Fallback: yfinance (original path) ----
     yf_gate.acquire()
-    with yf_lock:
-        return yf.Ticker(to_yf(symbol)).history(**kwargs)
+    try:
+        with yf_lock:
+            _r = yf.Ticker(to_yf(symbol)).history(**kwargs)
+        yf_note_result(None, "yf_history")
+        return _r
+    except Exception as _e:
+        yf_note_result(_e, f"yf_history {symbol}")
+        raise
 
 
 def _fetch_intraday_vwap(symbol):
@@ -12467,10 +12573,15 @@ def yf_download_batch(symbols, **kwargs):
         # case observed in testing (Q, DFS, HES, PSKY, WBA, FI, IPG, K, MMC,
         # SNDK, HOLX, CTRA); they get filled in from yfinance.
         yf_gate.acquire()
-        with yf_lock:
-            raw = yf.download([to_yf(s) for s in missing], group_by='ticker',
-                              progress=False, auto_adjust=False, threads=False,
-                              **kwargs)
+        try:
+            with yf_lock:
+                raw = yf.download([to_yf(s) for s in missing], group_by='ticker',
+                                  progress=False, auto_adjust=False, threads=False,
+                                  **kwargs)
+            yf_note_result(None, "yf_download_batch/partial")
+        except Exception as _e:
+            yf_note_result(_e, "yf_download_batch/partial")
+            raise
         for orig in missing:
             ys = to_yf(orig)
             try:
@@ -12483,9 +12594,14 @@ def yf_download_batch(symbols, **kwargs):
 
     # ---- Fallback: yfinance batched (original path) ----
     yf_gate.acquire()
-    with yf_lock:
-        raw = yf.download(syms, group_by='ticker', progress=False,
-                          auto_adjust=False, threads=False, **kwargs)
+    try:
+        with yf_lock:
+            raw = yf.download(syms, group_by='ticker', progress=False,
+                              auto_adjust=False, threads=False, **kwargs)
+        yf_note_result(None, "yf_download_batch")
+    except Exception as _e:
+        yf_note_result(_e, "yf_download_batch")
+        raise
 
     out = {}
     for orig, ys in zip(symbols, syms):
@@ -14155,7 +14271,7 @@ _afterhours_lock = threading.Lock()
 # from Saturday 10:00 PM ET through Friday 4:00 PM ET, and at no other time.
 AFTERHOURS_STUDY_WINDOW_ENABLED = True
 AFTERHOURS_STUDY_STOP_FRI_ET = _dt_time(16, 0)   # Friday 4:00 PM ET -> off
-AFTERHOURS_STUDY_RESUME_SAT_ET = _dt_time(22, 0) # Saturday 10:00 PM ET -> on
+AFTERHOURS_STUDY_RESUME_SAT_ET = _dt_time(23, 0) # Saturday 11:00 PM ET -> on
 
 
 def afterhours_in_study_window(now_et=None):
@@ -14172,10 +14288,10 @@ def afterhours_in_study_window(now_et=None):
         t = now_et.time()
         if wd == 4 and t >= AFTERHOURS_STUDY_STOP_FRI_ET:
             return False, ('Taking a break today — Friday after 4:00 PM ET; '
-                           'the brains are back on the tape Saturday 10:00 PM ET')
+                           'the brains are back on the tape Saturday 11:00 PM ET')
         if wd == 5 and t < AFTERHOURS_STUDY_RESUME_SAT_ET:
-            return False, ('Taking a break today — Saturday until 10:00 PM ET; '
-                           'the brains are back on the tape at 10:00 PM ET')
+            return False, ('Taking a break today — Saturday until 11:00 PM ET; '
+                           'the brains are back on the tape at 11:00 PM ET')
         return True, 'inside study window'
     except Exception:
         # Fail OPEN: a clock error should not silence the brains for a week.
@@ -14533,6 +14649,66 @@ def run_afterhours_market_study(force=False):
     except Exception as e:
         logging.error(f"[afterhours] study pass raised: {e}")
         return None
+
+
+_OBSERVER_THREAD = None
+_OBSERVER_STOP = threading.Event()
+
+
+def _continuous_observer_loop():
+    """Keep the brains studying the tape 24 hours a day inside the study window.
+
+    The window runs from Saturday 11:00 PM ET straight through to Friday
+    4:00 PM ET; Friday 4:00 PM -> Saturday 11:00 PM is the only break. Inside
+    the window this runs around the clock -- market hours, after hours,
+    overnight and through the weekend -- so the brains always learn from the
+    tape, not only on cycles where the bot happened to be allowed to trade.
+
+    Why a dedicated thread: run_afterhours_market_study() was reachable ONLY
+    from the closed-market wait loop, so the moment the market opened and that
+    loop exited, continuous study stopped entirely. The main trading loop never
+    called it.
+
+    Read-only: it studies and grades the tape, and never places, sizes or
+    cancels an order. Every yfinance request goes through the shared yf_gate,
+    which now also backs off exponentially when Yahoo throttles us, so running
+    around the clock cannot run the API budget into the ground.
+    """
+    logging.info("[observer] continuous market-study thread started "
+                 "(window: Sat 11:00 PM ET -> Fri 4:00 PM ET, 24h/day)")
+    _last_window_state = None
+    while not _OBSERVER_STOP.is_set():
+        try:
+            allowed, reason = afterhours_in_study_window()
+            if allowed != _last_window_state:
+                logging.info("[observer] study window %s — %s",
+                             "OPEN" if allowed else "CLOSED", reason)
+                _last_window_state = allowed
+            if allowed:
+                # Self-throttled to AFTERHOURS_STUDY_INTERVAL_SECONDS inside.
+                run_afterhours_market_study()
+        except Exception as e:
+            logging.error("[observer] study pass failed: %s", e, exc_info=True)
+        # Short wait so the stop event and window boundary stay responsive; the
+        # real cadence is enforced inside run_afterhours_market_study().
+        _OBSERVER_STOP.wait(60)
+    logging.info("[observer] continuous market-study thread exiting")
+
+
+def start_continuous_observer():
+    """Start the 24/7 observation thread once. Safe to call repeatedly."""
+    global _OBSERVER_THREAD
+    if not AFTERHOURS_STUDY_ENABLED:
+        logging.info("[observer] AFTERHOURS_STUDY_ENABLED is False — "
+                     "continuous observation not started")
+        return None
+    if _OBSERVER_THREAD is not None and _OBSERVER_THREAD.is_alive():
+        return _OBSERVER_THREAD
+    _OBSERVER_STOP.clear()
+    _OBSERVER_THREAD = threading.Thread(
+        target=_continuous_observer_loop, name="market-observer", daemon=True)
+    _OBSERVER_THREAD.start()
+    return _OBSERVER_THREAD
 
 
 def afterhours_study_status():
@@ -17010,8 +17186,13 @@ def days_until_next_earnings(symbol):
     def _fetch(sym):
         try:
             yf_gate.acquire()
-            with yf_lock:
-                cal = yf.Ticker(to_yf(sym)).calendar
+            try:
+                with yf_lock:
+                    cal = yf.Ticker(to_yf(sym)).calendar
+                yf_note_result(None, "earnings_calendar")
+            except Exception as _ce:
+                yf_note_result(_ce, f"earnings_calendar {sym}")
+                raise
             if not cal:
                 return None
             # yfinance returns either a dict with 'Earnings Date' (list of dates)
@@ -28532,6 +28713,18 @@ def main():
     except Exception as _e:
         print(f"[v18] boot thread failed: {_e}", flush=True)
         logging.error('[v18] boot thread failed: %s', _e, exc_info=True)
+
+    # Continuous 24/7 market observation. Runs inside the study window
+    # (Sat 11:00 PM ET -> Fri 4:00 PM ET) regardless of whether the market is
+    # open or which loop the bot is in, so the brains never stop learning from
+    # the tape. Read-only; it cannot trade.
+    try:
+        if start_continuous_observer() is not None:
+            print("[observer] continuous market study running "
+                  "(Sat 11PM ET -> Fri 4PM ET, 24h/day)", flush=True)
+    except Exception as _e:
+        logging.error('[observer] could not start continuous observer: %s',
+                      _e, exc_info=True)
 
     # P1.7: Load dashboard-persisted settings (chandelier mode, LEGACY_BRAINS gate,
     # per-symbol mute thresholds, etc.) before anything else consumes them.
