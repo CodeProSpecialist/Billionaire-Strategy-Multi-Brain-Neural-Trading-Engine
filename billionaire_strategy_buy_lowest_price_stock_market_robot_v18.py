@@ -10310,6 +10310,54 @@ def one_per_day_effective_mode():
     return ONE_PER_DAY_MODE
 
 
+def _count_todays_db_buys(today_iso):
+    """Distinct symbols this bot recorded a BUY for today, from the DB.
+
+    The in-memory counter lives in process memory, so a restart mid-session
+    used to hand the day a fresh slot. Seeding from trade_history makes the
+    cap survive a crash or a manual restart.
+
+    Counts DISTINCT symbols, not rows: a single entry that filled in two
+    partial fills is one stock, not two.
+
+    `date` in trade_history is written as the Eastern-time 'YYYY-MM-DD' of
+    the fill (see today_date_str in the buy path), so a plain equality match
+    is correct here -- no timezone conversion needed.
+
+    Returns 0 and logs loudly if the DB cannot be read, rather than blocking
+    all trading on a database hiccup.
+    """
+    try:
+        rows = (session.query(TradeHistory.symbols)
+                .filter(TradeHistory.action == 'buy',
+                        TradeHistory.date == today_iso)
+                .distinct()
+                .all())
+        return len({r[0] for r in rows if r and r[0]})
+    except Exception as e:
+        try:
+            session.rollback()
+        except Exception:
+            pass
+        logging.warning("one-per-day: could not read today's buys from the DB "
+                        "(%s). Seeding the daily counter at 0 -- if the bot "
+                        "restarted after already buying today, the cap may "
+                        "allow one extra entry.", e)
+        return 0
+
+
+def _one_per_day_roll_day_locked(today):
+    """Reset the counter for a new day, seeded from the DB. Caller holds
+    _one_per_day_lock."""
+    seeded = _count_todays_db_buys(today)
+    _one_per_day_state.update(date=today, opened=seeded)
+    if seeded:
+        logging.info("one-per-day: seeded today's counter from the DB -- "
+                     "%d position(s) already opened on %s", seeded, today)
+        print(f"  [one-per-day] {seeded} position(s) already opened today "
+              f"(recovered from the database after a restart).")
+
+
 def one_per_day_slots_left():
     """Positions still allowed to open today under the effective mode."""
     if one_per_day_effective_mode() == 'off':
@@ -10317,7 +10365,7 @@ def one_per_day_slots_left():
     today = datetime.now(eastern).date().isoformat()
     with _one_per_day_lock:
         if _one_per_day_state['date'] != today:
-            _one_per_day_state.update(date=today, opened=0)
+            _one_per_day_roll_day_locked(today)
         return max(0, int(ONE_PER_DAY_MAX) - int(_one_per_day_state['opened']))
 
 
@@ -10328,7 +10376,7 @@ def one_per_day_record_open(n=1):
     today = datetime.now(eastern).date().isoformat()
     with _one_per_day_lock:
         if _one_per_day_state['date'] != today:
-            _one_per_day_state.update(date=today, opened=0)
+            _one_per_day_roll_day_locked(today)
         _one_per_day_state['opened'] += int(n)
 
 
