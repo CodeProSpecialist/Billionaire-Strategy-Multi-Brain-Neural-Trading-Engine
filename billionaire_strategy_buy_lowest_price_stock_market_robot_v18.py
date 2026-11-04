@@ -10290,9 +10290,29 @@ _one_per_day_state = {'date': None, 'opened': 0}
 _one_per_day_lock = threading.Lock()
 
 
+def one_per_day_effective_mode():
+    """The one-per-day mode in force RIGHT NOW.
+
+    Operator rule: on a SIDEWAYS day we buy at most one stock for the entire
+    day, regardless of how ONE_PER_DAY_MODE is configured. On every other kind
+    of day the configured ONE_PER_DAY_MODE stands unchanged.
+
+    Reads the latched session regime, so before 10:30 ET (when nothing is
+    latched yet, and nothing may be bought anyway) this returns the configured
+    mode.
+    """
+    try:
+        if get_latched_session_regime() == REGIME_SIDEWAYS:
+            return 'armed'
+    except Exception as e:
+        logging.debug("one-per-day: regime lookup failed (%s); "
+                      "falling back to configured mode", e)
+    return ONE_PER_DAY_MODE
+
+
 def one_per_day_slots_left():
-    """Positions still allowed to open today under ONE_PER_DAY_MODE."""
-    if ONE_PER_DAY_MODE == 'off':
+    """Positions still allowed to open today under the effective mode."""
+    if one_per_day_effective_mode() == 'off':
         return 999
     today = datetime.now(eastern).date().isoformat()
     with _one_per_day_lock:
@@ -10303,7 +10323,7 @@ def one_per_day_slots_left():
 
 def one_per_day_record_open(n=1):
     """Called after a fill so the daily cap actually counts down."""
-    if ONE_PER_DAY_MODE == 'off':
+    if one_per_day_effective_mode() == 'off':
         return
     today = datetime.now(eastern).date().isoformat()
     with _one_per_day_lock:
@@ -10350,9 +10370,11 @@ EARLY_MORNING_GATE_MODE = 'armed'           # 'armed' | 'shadow' | 'off'
 # bought before 10:30 ET.
 #
 #   bull      -> buys allowed 10:30 ET .. 12:30 ET
-#   sideways  -> buys allowed 10:30 ET .. 11:00 ET, and ONLY for
-#                upward-momentum dips (the momentum gate runs STRICT:
-#                no shadow pass-through, no fail-open on missing data)
+#   sideways  -> buys allowed 10:30 ET .. 11:00 ET, ONLY upward-momentum
+#                dips (the momentum gate runs STRICT: no shadow pass-
+#                through, no fail-open on missing data), and AT MOST ONE
+#                position for the entire day (one_per_day_effective_mode
+#                forces the one-per-day cap on regardless of config)
 #   bear      -> no buys at all; "market is not profitable today"
 #   panic     -> no buys at all; "market is not profitable today"
 #   unknown   -> no buys at all (fail closed: if the regime could not be
@@ -19688,8 +19710,10 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
             if not _uni_ok:
                 update_previous_price(symbol, current_price)
                 continue
-            # Per-day entry ceiling, only when ONE_PER_DAY_MODE is armed.
-            if ONE_PER_DAY_MODE == 'armed' and one_per_day_slots_left() <= 0:
+            # Per-day entry ceiling. Armed when configured, and ALWAYS
+            # armed on a sideways day (one stock for the whole day).
+            if (one_per_day_effective_mode() == 'armed'
+                    and one_per_day_slots_left() <= 0):
                 print(f"  [one-per-day] daily position already opened — "
                       f"no further entries today.")
                 update_previous_price(symbol, current_price)
@@ -20269,9 +20293,10 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
 
     candidates.sort(key=lambda c: c['rank_score'], reverse=True)
     _cap = MAX_NEW_POSITIONS_PER_CYCLE
-    if ONE_PER_DAY_MODE == 'armed':
+    _opd_mode = one_per_day_effective_mode()
+    if _opd_mode == 'armed':
         _cap = min(_cap, one_per_day_slots_left())
-    elif ONE_PER_DAY_MODE == 'shadow' and candidates:
+    elif _opd_mode == 'shadow' and candidates:
         print(f"  [one-per-day SHADOW] would buy {candidates[0]['yf_symbol']} "
               f"only; letting the normal {MAX_NEW_POSITIONS_PER_CYCLE}-position "
               f"path run.")
@@ -20696,7 +20721,7 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
                     # order that never filled must not burn the day's slot.
                     try:
                         one_per_day_record_open(1)
-                        if ONE_PER_DAY_MODE == 'armed':
+                        if one_per_day_effective_mode() == 'armed':
                             print(f"  [one-per-day] slot used; "
                                   f"{one_per_day_slots_left()} left today.")
                     except Exception as _oe:
