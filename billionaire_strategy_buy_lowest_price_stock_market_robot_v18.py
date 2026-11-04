@@ -18820,46 +18820,20 @@ def nasdaq_outlook_snapshot():
 
 
 
-def buy_stocks(symbols_to_buy_list, lock):
-    print("Starting buy_stocks function...")
-    _DECISION_IN_PROGRESS.set()
-    try:
-        return _buy_stocks_body(symbols_to_buy_list, lock)
-    finally:
-        _DECISION_IN_PROGRESS.clear()
+def _legacy_brains_feed_and_observe(symbols_to_buy_list):
+    """Push fresh market state into the brain suite and run observe_market.
 
-def _buy_stocks_body(symbols_to_buy_list, lock):
+    Extracted from buy_stocks() so the brains keep STUDYING the market even
+    on cycles where no buying is permitted. This block used to sit AFTER the
+    10:05 ET gate and the weekday-bias gate, both of which return early -- so
+    before 10:05 ET (the most informative stretch of the session) and for the
+    whole of any weekday-bias-deny day, the brains got no prices, no
+    indicators and no observe_market call at all. They only ever learned from
+    the market on days they were allowed to trade.
 
-    # ---------------- Hard 10:05 AM Eastern buy-cycle block ----------------
-    # Never buy before 10:05 AM Eastern time because the stock market is
-    # nothing but confusing noise for the first 35 minutes every day.
-    #
-    # NO buy orders before 10:05 AM Eastern -- no exceptions, no per-symbol
-    # drop-qualifies escape hatch. Skip the whole cycle (including the LEGACY_BRAINS
-    # feed's per-symbol fetches) so we don't spend rate-limit budget on
-    # candidates we can't act on. The 2% overnight-drop pre-cutoff carve-out
-    # inside check_early_morning_entry_gate is still there for anyone who
-    # explicitly re-enables it (EARLY_MORNING_GATE_MODE='shadow'/'off'), but
-    # this hard block runs first and always wins.
-    _now_et = datetime.now(eastern).time()
-    if _now_et < EARLY_MORNING_CUTOFF_ET:
-        print(f"  [10:05 ET gate] current {_now_et.strftime('%H:%M:%S')} ET < "
-              f"{EARLY_MORNING_CUTOFF_ET.strftime('%H:%M')} ET — no buy orders "
-              f"before 10:05 AM Eastern. Skipping cycle.")
-        return
-
-    # ---------------- Weekday bias (cycle-level) ----------------
-    # Historically bearish weekdays get no new entries at all. Checked once
-    # per cycle rather than per symbol -- it is the same answer for every
-    # candidate, and skipping early saves the whole scan.
-    _wd_allow, _wd_reason = check_weekday_bias_gate()
-    if not _wd_allow:
-        print(f"  [weekday bias] {_wd_reason}. No new entries today. Skipping buy cycle.")
-        logging.info(f"Buy cycle skipped — weekday bias: {_wd_reason}")
-        return
-    elif _wd_reason.startswith('[SHADOW would-deny]'):
-        print(f"  [weekday bias SHADOW] {_wd_reason} (would-block, letting through)")
-
+    Returns whether the brain suite was available this cycle; the buy path
+    still needs that for its fail-open gate.
+    """
     # ═══ LEGACY_BRAINS: push fresh state into brain-suite bus ═══
     # Skip the whole LEGACY_BRAINS feed if the brain-suite worker is currently
     # busy (training or otherwise wedged). We must keep trading during
@@ -18956,6 +18930,73 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
             else:
                 print(f"[LEGACY_BRAINS feed] {_e}")
     # ═══ end LEGACY_BRAINS feed ═══
+    return _LEGACY_BRAIN_AVAILABLE_THIS_CYCLE
+
+
+def buy_stocks(symbols_to_buy_list, lock):
+    print("Starting buy_stocks function...")
+    _DECISION_IN_PROGRESS.set()
+    try:
+        return _buy_stocks_body(symbols_to_buy_list, lock)
+    finally:
+        _DECISION_IN_PROGRESS.clear()
+
+def _buy_stocks_body(symbols_to_buy_list, lock):
+
+    # ---------------- Hard 10:05 AM Eastern buy-cycle block ----------------
+    # Never buy before 10:05 AM Eastern time because the stock market is
+    # nothing but confusing noise for the first 35 minutes every day.
+    #
+    # NO buy orders before 10:05 AM Eastern -- no exceptions, no per-symbol
+    # drop-qualifies escape hatch.
+    #
+    # NOTE: this comment used to say the cycle skipped the LEGACY_BRAINS feed's
+    # per-symbol fetches too, to save rate-limit budget on candidates we can't
+    # act on. That is no longer true, and the change is deliberate: skipping
+    # the feed also meant the brains learned nothing during the opening 35
+    # minutes, which is the most information-rich stretch of the day. The feed
+    # now runs before this gate. It costs the per-symbol fetches during that
+    # window; if rate limits become a problem, throttle the observation
+    # cadence rather than going back to observing nothing.
+    # The 2% overnight-drop pre-cutoff carve-out
+    # inside check_early_morning_entry_gate is still there for anyone who
+    # explicitly re-enables it (EARLY_MORNING_GATE_MODE='shadow'/'off'), but
+    # this hard block runs first and always wins.
+    # Feed the brain suite and run observe_market BEFORE any gate that can
+    # skip the cycle. Not being allowed to buy is not a reason to stop
+    # learning: this call used to sit below the 10:05 ET gate and the
+    # weekday-bias gate, so the brains received nothing during the opening
+    # stretch of every session and nothing at all on a weekday-bias-deny day.
+    # Observation is read-only and never places an order, so it is safe here.
+    try:
+        _LEGACY_BRAIN_AVAILABLE_THIS_CYCLE = _legacy_brains_feed_and_observe(
+            symbols_to_buy_list)
+    except Exception as _oe:
+        _LEGACY_BRAIN_AVAILABLE_THIS_CYCLE = False
+        logging.error("LEGACY_BRAINS observe/feed cycle failed: %s",
+                      _oe, exc_info=True)
+
+    _now_et = datetime.now(eastern).time()
+    if _now_et < EARLY_MORNING_CUTOFF_ET:
+        print(f"  [10:05 ET gate] current {_now_et.strftime('%H:%M:%S')} ET < "
+              f"{EARLY_MORNING_CUTOFF_ET.strftime('%H:%M')} ET — no buy orders "
+              f"before 10:05 AM Eastern. Skipping cycle "
+              f"(brains still observed the market).")
+        return
+
+    # ---------------- Weekday bias (cycle-level) ----------------
+    # Historically bearish weekdays get no new entries at all. Checked once
+    # per cycle rather than per symbol -- it is the same answer for every
+    # candidate, and skipping early saves the whole scan.
+    _wd_allow, _wd_reason = check_weekday_bias_gate()
+    if not _wd_allow:
+        print(f"  [weekday bias] {_wd_reason}. No new entries today. Skipping "
+              f"buy cycle (brains still observed the market).")
+        logging.info(f"Buy cycle skipped — weekday bias: {_wd_reason} "
+                     f"(observation still ran)")
+        return
+    elif _wd_reason.startswith('[SHADOW would-deny]'):
+        print(f"  [weekday bias SHADOW] {_wd_reason} (would-block, letting through)")
 
     # ═══ BRAIN SUITE: refresh volatility regime each cycle ═══
     try:
@@ -22198,6 +22239,160 @@ def load_positions_from_database():
     return {p.symbols: (p.avg_price, p.purchase_date) for p in session.query(Position).all()}
 
 
+def _find_external_exit_price(symbol, fallback_entry_price):
+    """Recover the real fill price of a position that closed outside the bot.
+
+    Loss exits are broker-side GTC trailing stops, so they fill without the
+    sell loop ever running. Ask Alpaca for the most recent filled sell order
+    on this symbol and use its average fill price. Falls back to the last
+    known price, then to the entry price (a 0% round trip) so the trade can
+    still be settled rather than dropped.
+    """
+    try:
+        orders = api.list_orders(status='closed', limit=50, direction='desc',
+                                 symbols=[symbol])
+        for o in orders:
+            try:
+                if str(getattr(o, 'side', '')).lower() != 'sell':
+                    continue
+                px = getattr(o, 'filled_avg_price', None)
+                if px and float(px) > 0:
+                    return float(px), f"broker fill {getattr(o, 'type', 'sell')}"
+            except Exception:
+                continue
+    except Exception as e:
+        logging.warning("[settle-external] %s: could not read closed orders "
+                        "from Alpaca (%s); falling back to last price.",
+                        symbol, e)
+    try:
+        cp = get_current_price(symbol)
+        if cp and float(cp) > 0:
+            return float(cp), "last known price (no filled sell order found)"
+    except Exception:
+        pass
+    return float(fallback_entry_price or 0.0), "entry price (exit unknown)"
+
+
+def settle_externally_closed_position(symbol, entry_price, qty, reason="external close"):
+    """Run the FULL learning path for a trade that closed outside the sell loop.
+
+    Positions exited by a broker-side trailing stop, a manual sale in the
+    Alpaca app, or a broker liquidation never pass through sell_stocks(), so
+    none of the settlement hooks there ever fired for them. Startup and
+    periodic reconcile simply deleted the orphaned DB row. Because the
+    trailing stop is precisely how LOSING trades exit, the brains were being
+    trained on a win-skewed subset of reality -- the opposite of what the
+    risk-side brains need. This closes that hole: every externally closed
+    position is scored and fed to the same learners a normal exit uses.
+    """
+    try:
+        entry_price = float(entry_price or 0.0)
+        qty = float(qty or 0.0)
+        if entry_price <= 0 or qty <= 0:
+            logging.error("[settle-external] %s: entry price/qty unusable "
+                          "(entry=%s qty=%s) — cannot score this close.",
+                          symbol, entry_price, qty)
+            return False
+
+        exit_price, px_source = _find_external_exit_price(symbol, entry_price)
+        if exit_price <= 0:
+            logging.error("[settle-external] %s: no usable exit price — "
+                          "cannot score this close.", symbol)
+            return False
+
+        pnl_dollar = (exit_price - entry_price) * qty
+        outcome_pct = (exit_price - entry_price) / entry_price
+        won = (exit_price - entry_price) > 0
+
+        logging.warning(
+            "[settle-external] %s closed outside the sell loop (%s). "
+            "Settling it so the brains still learn: entry %.4f -> exit %.4f "
+            "(%s), qty %s, P&L $%+.2f (%+.2f%%) — %s",
+            symbol, reason, entry_price, exit_price, px_source, qty,
+            pnl_dollar, outcome_pct * 100.0, "WIN" if won else "LOSS")
+
+        # 1. The shared round-trip learner (CAPITAL_ALLOC, PROFIT_GROWTH,
+        #    CHANDELIER_BRAIN, DAYTRADE_BRAIN, CORRELATION_GUARD, INTEL).
+        try:
+            feed_brains_on_round_trip(symbol, qty, exit_price, entry_price)
+        except Exception as e:
+            logging.error("[settle-external] %s: feed_brains_on_round_trip "
+                          "failed: %s", symbol, e, exc_info=True)
+
+        # 2. Per-symbol record + trade governor.
+        try:
+            PERSYMBOL.record(symbol, won, pnl_dollar)
+            GOVERNOR.on_close(won)
+        except Exception as e:
+            logging.error("[settle-external] %s: PERSYMBOL/GOVERNOR failed: %s",
+                          symbol, e, exc_info=True)
+
+        # 3. LEGACY_BRAINS trading floor + BrainComms debrief.
+        if _LEGACY_BRAIN_AVAILABLE:
+            try:
+                _st = _LEGACY_BRAIN_ENTRY_STATE.pop(symbol.upper(), {}) or {}
+                _notional = float(_st.get('notional', entry_price * qty) or (entry_price * qty))
+                LEGACY_BRAINS.TRADING_FLOOR.on_trade_settled(
+                    symbol=symbol, won=bool(won), pnl=float(pnl_dollar),
+                    brain_p=float(_st.get('brain_p', 0.5)), side="LONG",
+                    indicators={
+                        "notional": _notional,
+                        "applied_mult": float(_st.get('applied_mult', 1.0)),
+                        "realized_pnl_pct": pnl_dollar / max(1.0, _notional),
+                        "external_exit": True,
+                    })
+            except Exception as e:
+                logging.error("[settle-external] %s: on_trade_settled failed: %s",
+                              symbol, e, exc_info=True)
+            try:
+                LEGACY_BRAINS.BRAIN_COMMS.close_position(
+                    symbol=symbol, exit_price=float(exit_price),
+                    exit_reason=(f"{'WIN' if won else 'LOSS'} ${pnl_dollar:+.2f} "
+                                 f"({outcome_pct*100:+.2f}%) [{reason}]"))
+            except Exception as e:
+                logging.error("[settle-external] %s: BrainComms close_position "
+                              "failed: %s", symbol, e, exc_info=True)
+
+        # 4. Brain-trust prediction settlement.
+        try:
+            brain_trust_settle_symbol(symbol, won)
+        except Exception as e:
+            logging.error("[settle-external] %s: brain_trust_settle_symbol "
+                          "failed: %s", symbol, e, exc_info=True)
+
+        # 5. Close the open TradeFeatures row so the entry snapshot is joined
+        #    to a real outcome instead of being left dangling forever.
+        try:
+            _fr = (session.query(TradeFeatures)
+                   .filter_by(symbols=symbol, exit_date=None)
+                   .order_by(TradeFeatures.id.desc()).first())
+            if _fr is not None and _fr.entry_price:
+                _fr.exit_date = datetime.now(eastern).date().isoformat()
+                _fr.exit_price = exit_price
+                _fr.outcome_pct = outcome_pct
+        except Exception as e:
+            logging.error("[settle-external] %s: TradeFeatures close failed: %s",
+                          symbol, e, exc_info=True)
+
+        # 6. Narrate it on the Trade Decision Transcript.
+        try:
+            if V18_FLOOR_ENABLED:
+                FLOOR.say("EXITS",
+                          f"{symbol} closed away from the desk ({reason}): "
+                          f"{entry_price:.2f} -> {exit_price:.2f}, "
+                          f"${pnl_dollar:+.2f} ({outcome_pct*100:+.2f}%). "
+                          f"Logged it so the brains learn from it.",
+                          symbol=symbol, kind="call", force=True)
+        except Exception:
+            pass
+
+        return True
+    except Exception as e:
+        logging.error("[settle-external] %s: unexpected failure: %s",
+                      symbol, e, exc_info=True)
+        return False
+
+
 def reconcile_positions_on_startup():
     """
     Alpaca is the single source of truth. The local .db is only a cache.
@@ -22249,6 +22444,18 @@ def reconcile_positions_on_startup():
               f"${row.avg_price:.2f}) but NOT held at Alpaca — deleting stale row.")
         logging.warning(f"Startup reconcile: deleting stale DB position {sym} "
                         f"(qty={row.quantity}, avg={row.avg_price}); not present at broker.")
+        # This position closed without passing through sell_stocks() — almost
+        # always a broker-side trailing-stop fill, i.e. a LOSS. Deleting the
+        # row here used to be the end of it: no settlement, no learning. Score
+        # it against the real broker fill first, so losses reach the brains
+        # just like take-profit wins do.
+        try:
+            settle_externally_closed_position(
+                sym, row.avg_price, row.quantity,
+                reason="closed at broker while bot was not watching")
+        except Exception as _se:
+            logging.error("Startup reconcile: could not settle externally "
+                          "closed position %s: %s", sym, _se, exc_info=True)
         session.delete(row)
         profit_monitor.clear(sym)
         _scale_out_clear(sym)
