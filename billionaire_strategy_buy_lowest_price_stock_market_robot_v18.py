@@ -10363,19 +10363,32 @@ COMPOSITE_RANK_MODE     = 'armed'   # 'armed' | 'off'
 ONE_PER_DAY_RANK_VOLUME = 1.0       # weight on relative-volume z-score
 ONE_PER_DAY_RANK_MOM20  = 1.0       # weight on 20-day momentum z-score
 ONE_PER_DAY_RANK_MCAP   = 1.0       # weight on market-cap z-score
-# Universe: profitable NASDAQ technology, mid cap and up.
-UNIVERSE_NASDAQ_TECH_ONLY = True
+# Universe: profitable technology and consumer-electronics brands, mid cap
+# and up. NASDAQ and NYSE (NYSE added 2026-11-04 by operator instruction).
+UNIVERSE_CORE_TECH_ONLY = True
 UNIVERSE_MIN_MARKET_CAP   = 2_000_000_000     # $2B -- mid cap floor
-_NASDAQ_TECH_UNIVERSE = [
+_CORE_TECH_UNIVERSE = [
     # Mega-cap anchors (FAANG + friends). These were missing from the original
     # list -- it was built from semiconductor and enterprise-software names, so
-    # the biggest and most liquid Nasdaq technology companies were absent.
+    # the biggest and most liquid technology companies were absent.
     'META','AMZN','GOOGL','GOOG','NFLX','TSLA',
-    # Top computer / electronics brands. All NASDAQ-listed and above the
-    # UNIVERSE_MIN_MARKET_CAP floor. Deliberately excluded because they are
-    # NYSE-listed, not Nasdaq: DELL, HPQ, HPE, IBM, ANET, PSTG, SONY, MSI,
-    # KEYS, JBL. Adding those would break the Nasdaq-only rule.
+    # Top computer / electronics brands, NASDAQ-listed.
     'INTC','LOGI','GRMN','FLEX','CDW','SNDK','SANM','PLXS','ROKU',
+    # Top computer brands, NYSE-listed. Operator instruction 2026-11-04: the
+    # universe is no longer Nasdaq-only -- the best-known computer makers are
+    # NYSE companies and excluding them left obvious names on the table.
+    'DELL','HPQ','HPE','IBM','ANET','PSTG','XRX',
+    # Consumer electronics brands a shopper would recognize from a Best Buy
+    # floor, US-listed and above the market-cap floor.
+    'BBY','SONY','WHR','MSI','KEYS','JBL','CAJ',
+    # NOT included, and why -- so a future reader does not "fix" the omission:
+    #   Samsung, LG Electronics, Lenovo, Acer, ASUS, TCL, Hisense, Bose,
+    #     Vizio -- no US listing (Vizio was taken private by Walmart; LG
+    #     Display's LPL ADR is a panel supplier, not the consumer brand).
+    #   SONO (Sonos), GPRO (GoPro), CRSR (Corsair) -- recognizable brands but
+    #     below UNIVERSE_MIN_MARKET_CAP ($2B) and/or the playbook's
+    #     $20M/day dollar-volume floor, so they would be filtered out every
+    #     cycle anyway. Adding them is noise, not reach.
     'AAPL','NVDA','MSFT','AVGO','MU','AMD','ASML','CSCO','AMAT','PANW','LRCX',
     'TXN','CRWD','ARM','KLAC','ADI','MRVL','QCOM','STX','WDC','FTNT','ADBE',
     'INTU','CDNS','SNPS','DDOG','NXPI','MPWR','ADSK','TER','MCHP','PAYX',
@@ -10515,18 +10528,24 @@ def one_per_day_record_open(n=1):
 
 
 def in_trading_universe(yf_symbol):
-    """(allow, reason) -- profitable NASDAQ technology, mid cap and up.
+    """(allow, reason) -- profitable technology and consumer-electronics
+    companies, mid cap and up.
 
-    The list is a static screen (NASDAQ-listed, sector=Technology, market cap
-    >= $2B, positive net income) rather than a live fundamentals lookup, so it
-    costs nothing per cycle. Re-screen it when the operator wants it refreshed.
+    The list is a static screen (US-listed on NASDAQ or NYSE,
+    sector=Technology or a major consumer-electronics brand, market cap
+    >= $2B) rather than a live fundamentals lookup, so it costs nothing per
+    cycle. Re-screen it when the operator wants it refreshed.
+
+    NOTE: this was NASDAQ-only until 2026-11-04. It now includes NYSE names
+    (DELL, HPQ, HPE, IBM, ANET, PSTG, SONY, MSI, KEYS, JBL, WHR, CAJ, XRX)
+    at the operator's instruction.
     """
-    if not UNIVERSE_NASDAQ_TECH_ONLY:
+    if not UNIVERSE_CORE_TECH_ONLY:
         return True, 'universe filter off'
     sym = (yf_symbol or '').upper().replace('.', '-')
-    if sym in _NASDAQ_TECH_UNIVERSE:
-        return True, 'NASDAQ tech mid/large cap'
-    return False, 'not in NASDAQ tech mid/large-cap universe'
+    if sym in _CORE_TECH_UNIVERSE:
+        return True, 'core tech/electronics mid-large cap'
+    return False, 'not in the core tech/electronics mid/large-cap universe'
 
 # ---------------- Early-morning entry gate ----------------
 # Before this cutoff (Eastern time), the risk brain and buy path together
@@ -11323,8 +11342,9 @@ NDX_PERMANENT_EXCLUSIONS = {'MRNA'}
 
 
 # Which list the playbook's 'ndx' universe key resolves to.
-#   'tech' -> _NASDAQ_TECH_UNIVERSE: profitable Nasdaq technology, mid cap and
-#             up (61 names). This is the operator's chosen universe.
+#   'tech' -> _CORE_TECH_UNIVERSE: profitable technology and consumer-
+#             electronics brands, NASDAQ + NYSE, mid cap and up. This is the
+#             operator's chosen universe.
 #   'ndx100' -> PLAYBOOK_UNIVERSE_NDX: the full Nasdaq-100 (101 names).
 #
 # IMPORTANT, and the reason this is a switch rather than an edit: the
@@ -11338,7 +11358,7 @@ PLAYBOOK_NDX_UNIVERSE_SOURCE = 'tech'    # 'tech' | 'ndx100'
 
 def _ndx_tradable_universe():
     """The playbook's Nasdaq universe with permanently excluded names removed."""
-    base = (_NASDAQ_TECH_UNIVERSE if PLAYBOOK_NDX_UNIVERSE_SOURCE == 'tech'
+    base = (_CORE_TECH_UNIVERSE if PLAYBOOK_NDX_UNIVERSE_SOURCE == 'tech'
             else PLAYBOOK_UNIVERSE_NDX)
     # Deduplicate while preserving order -- the tech list is hand-maintained
     # and a repeated name would otherwise occupy two of the 25 shortlist slots.
@@ -15128,8 +15148,8 @@ def _afterhours_universe():
     what they are actually allowed to buy; falls back to today's scanner
     watchlist, then to the ML pretraining universe."""
     try:
-        if UNIVERSE_NASDAQ_TECH_ONLY and _NASDAQ_TECH_UNIVERSE:
-            return list(_NASDAQ_TECH_UNIVERSE)[:AFTERHOURS_STUDY_MAX_SYMBOLS]
+        if UNIVERSE_CORE_TECH_ONLY and _CORE_TECH_UNIVERSE:
+            return list(_CORE_TECH_UNIVERSE)[:AFTERHOURS_STUDY_MAX_SYMBOLS]
     except Exception:
         pass
     try:
