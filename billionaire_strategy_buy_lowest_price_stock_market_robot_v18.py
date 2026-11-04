@@ -10380,11 +10380,16 @@ _CORE_TECH_UNIVERSE = [
     'DELL','HPQ','HPE','IBM','ANET','PSTG','XRX',
     # Consumer electronics brands a shopper would recognize from a Best Buy
     # floor, US-listed and above the market-cap floor.
-    'BBY','SONY','WHR','KEYS','JBL','CAJ',
+    'BBY','SONY','WHR','KEYS','CAJ',
     # NOT included, and why -- so a future reader does not "fix" the omission:
     #   Samsung, LG Electronics, Lenovo, Acer, ASUS, TCL, Hisense, Bose,
     #     Vizio -- no US listing (Vizio was taken private by Walmart; LG
     #     Display's LPL ADR is a panel supplier, not the consumer brand).
+    #   JBL -- the ticker JBL is Jabil, a contract electronics manufacturer,
+    #     NOT the speaker brand. Operator does not want it. The speaker JBL
+    #     belongs to Harman (owned by Samsung) and has no separate listing,
+    #     so there is nothing to substitute. Do not "restore" JBL thinking it
+    #     is the speakers.
     #   MSI -- the ticker MSI is Motorola Solutions (police radios,
     #     enterprise comms), NOT the gaming-laptop maker. Operator does not
     #     want Motorola. The gaming MSI is Micro-Star International, listed in
@@ -10542,7 +10547,7 @@ def in_trading_universe(yf_symbol):
     cycle. Re-screen it when the operator wants it refreshed.
 
     NOTE: this was NASDAQ-only until 2026-11-04. It now includes NYSE names
-    (DELL, HPQ, HPE, IBM, ANET, PSTG, SONY, KEYS, JBL, WHR, CAJ, XRX)
+    (DELL, HPQ, HPE, IBM, ANET, PSTG, SONY, KEYS, WHR, CAJ, XRX)
     at the operator's instruction.
     """
     if not UNIVERSE_CORE_TECH_ONLY:
