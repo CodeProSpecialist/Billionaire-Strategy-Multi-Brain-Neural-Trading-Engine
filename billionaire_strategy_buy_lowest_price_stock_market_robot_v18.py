@@ -10291,23 +10291,37 @@ _one_per_day_lock = threading.Lock()
 
 
 def one_per_day_effective_mode():
-    """The one-per-day mode in force RIGHT NOW.
+    """The one-per-day mode in force RIGHT NOW, decided by the regime.
 
-    Operator rule: on a SIDEWAYS day we buy at most one stock for the entire
-    day, regardless of how ONE_PER_DAY_MODE is configured. On every other kind
-    of day the configured ONE_PER_DAY_MODE stands unchanged.
+    Operator rule: the one-per-day cap applies on sideways/neutral and
+    bearish days, and NEVER on a bull day.
 
-    Reads the latched session regime, so before 10:30 ET (when nothing is
-    latched yet, and nothing may be bought anyway) this returns the configured
-    mode.
+        bull                     -> 'off'    (trade as many times as the
+                                              window and the gate chain allow)
+        sideways / bear / panic  -> 'armed'  (one stock for the entire day)
+
+    'sideways' is this codebase's neutral state; there is no separate neutral
+    regime. bear and panic cannot buy at all anyway -- check_regime_buy_window
+    blocks the whole cycle -- so the cap is a second line of defence there,
+    not the primary one.
+
+    This OVERRIDES the configured ONE_PER_DAY_MODE in both directions: a bull
+    day is uncapped even if ONE_PER_DAY_MODE is 'armed', and a sideways day is
+    capped even though it is 'off'. The configured value is used only before
+    10:30 ET, when no regime is latched yet and nothing may be bought anyway,
+    and as the fallback if the regime lookup fails.
     """
     try:
-        if get_latched_session_regime() == REGIME_SIDEWAYS:
-            return 'armed'
+        regime = get_latched_session_regime()
     except Exception as e:
         logging.debug("one-per-day: regime lookup failed (%s); "
                       "falling back to configured mode", e)
-    return ONE_PER_DAY_MODE
+        return ONE_PER_DAY_MODE
+    if regime is None:
+        return ONE_PER_DAY_MODE          # pre-10:30; no buying happens anyway
+    if regime == REGIME_BULL:
+        return 'off'                     # bull days are never capped
+    return 'armed'                       # sideways / bear / panic / unknown
 
 
 def _count_todays_db_buys(today_iso):
@@ -10421,8 +10435,9 @@ EARLY_MORNING_GATE_MODE = 'armed'           # 'armed' | 'shadow' | 'off'
 #   sideways  -> buys allowed 10:30 ET .. 11:00 ET, ONLY upward-momentum
 #                dips (the momentum gate runs STRICT: no shadow pass-
 #                through, no fail-open on missing data), and AT MOST ONE
-#                position for the entire day (one_per_day_effective_mode
-#                forces the one-per-day cap on regardless of config)
+#                position for the entire day (the one-per-day cap is
+#                forced on for every non-bull regime; see
+#                one_per_day_effective_mode)
 #   bear      -> no buys at all; "market is not profitable today"
 #   panic     -> no buys at all; "market is not profitable today"
 #   unknown   -> no buys at all (fail closed: if the regime could not be
