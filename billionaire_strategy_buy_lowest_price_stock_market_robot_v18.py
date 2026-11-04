@@ -10874,8 +10874,173 @@ yf_lock = threading.Lock()
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-logging.basicConfig(filename=os.path.join(_BASE_DIR, 'trading-bot-program-logging-messages.txt'),
-                    level=logging.INFO)
+# ═══════════════════════════════════════════════════════════════════════════
+#  PROGRAM-WIDE LOGGING RIG
+#  ---------------------------------------------------------------------------
+#  The old setup was a bare basicConfig(): no formatter (so lines had no
+#  timestamp, level or thread), no rotation, and — the big gap — the ~466
+#  print() calls scattered through this file never reached the log file at
+#  all. Crashes on the 15+ daemon threads vanished silently too.
+#
+#  This block fixes all of that:
+#    1. Rotating file handler, fully formatted (time / level / thread / where).
+#    2. Console handler bound to the ORIGINAL stdout so it never recurses.
+#    3. stdout + stderr are tee'd into the log, so every print() in the
+#       program is captured as program activity (ANSI colour stripped).
+#    4. sys.excepthook, threading.excepthook and unraisablehook route every
+#       uncaught error — main thread or worker thread — into the log.
+# ═══════════════════════════════════════════════════════════════════════════
+import sys as _sys
+import re as _re
+import logging.handlers as _logging_handlers
+
+LOG_FILE = os.path.join(_BASE_DIR, 'trading-bot-program-logging-messages.txt')
+
+# Keep untouched handles to the real console BEFORE we tee anything, so the
+# console log handler can never feed its own output back into logging.
+_REAL_STDOUT = _sys.stdout
+_REAL_STDERR = _sys.stderr
+
+_LOG_FMT = logging.Formatter(
+    '%(asctime)s %(levelname)-8s [%(threadName)s] %(name)s: %(message)s',
+    '%Y-%m-%d %H:%M:%S')
+
+_root_logger = logging.getLogger()
+_root_logger.setLevel(logging.INFO)
+for _h in list(_root_logger.handlers):      # clear anything basicConfig left
+    _root_logger.removeHandler(_h)
+
+# 1. Rotating file handler — 25 MB x 10 files, so the log cannot eat the disk.
+_file_handler = _logging_handlers.RotatingFileHandler(
+    LOG_FILE, maxBytes=25 * 1024 * 1024, backupCount=10, encoding='utf-8')
+_file_handler.setFormatter(_LOG_FMT)
+_file_handler.setLevel(logging.INFO)
+_root_logger.addHandler(_file_handler)
+
+# 2. Console handler on the saved real stdout (no recursion through the tee).
+_console_handler = logging.StreamHandler(_REAL_STDOUT)
+_console_handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
+_console_handler.setLevel(logging.WARNING)   # console stays quiet; file is full
+
+
+class _SkipTeedStreams(logging.Filter):
+    """Text captured from stdout/stderr is already on the console — echoing it
+    back through the console handler would print every such line twice."""
+
+    def filter(self, record):
+        return record.name not in ('stdout', 'stderr')
+
+
+_console_handler.addFilter(_SkipTeedStreams())
+_root_logger.addHandler(_console_handler)
+
+logging.captureWarnings(True)                # warnings module -> log file
+
+_ANSI_RE = _re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
+
+
+class _TeeToLog:
+    """Mirror a console stream into the log file line by line.
+
+    print() keeps working exactly as before — the original stream still gets
+    everything — but the text now also lands in the log, which is what makes
+    the file a true record of all program activity.
+    """
+
+    def __init__(self, stream, level=logging.INFO, tag='stdout'):
+        self._stream = stream
+        self._level = level
+        self._logger = logging.getLogger(tag)
+        self._buf = ''
+        self._lock = threading.RLock()
+
+    def write(self, data):
+        try:
+            self._stream.write(data)
+        except Exception:
+            pass
+        try:
+            with self._lock:
+                self._buf += data
+                while '\n' in self._buf:
+                    line, self._buf = self._buf.split('\n', 1)
+                    line = _ANSI_RE.sub('', line).rstrip()
+                    if line:
+                        self._logger.log(self._level, line)
+        except Exception:
+            pass          # logging must never break the program's output
+
+    def flush(self):
+        try:
+            self._stream.flush()
+        except Exception:
+            pass
+
+    def isatty(self):
+        try:
+            return self._stream.isatty()
+        except Exception:
+            return False
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+# 3. Tee both console streams into the log.
+_sys.stdout = _TeeToLog(_REAL_STDOUT, logging.INFO, 'stdout')
+_sys.stderr = _TeeToLog(_REAL_STDERR, logging.ERROR, 'stderr')
+
+
+# 4. Catch every uncaught exception, on any thread.
+def _log_uncaught(exc_type, exc_value, exc_tb):
+    if issubclass(exc_type, KeyboardInterrupt):
+        _sys.__excepthook__(exc_type, exc_value, exc_tb)
+        return
+    logging.critical('UNCAUGHT EXCEPTION on main thread',
+                     exc_info=(exc_type, exc_value, exc_tb))
+
+
+def _log_thread_exc(args):
+    if issubclass(args.exc_type, SystemExit):
+        return
+    logging.critical(
+        'UNCAUGHT EXCEPTION on thread %r',
+        getattr(args.thread, 'name', '?'),
+        exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+
+
+def _log_unraisable(args):
+    logging.error('UNRAISABLE EXCEPTION in %r', getattr(args, 'object', None),
+                  exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+
+
+_sys.excepthook = _log_uncaught
+try:
+    threading.excepthook = _log_thread_exc        # Python 3.8+
+except Exception:
+    pass
+try:
+    _sys.unraisablehook = _log_unraisable
+except Exception:
+    pass
+
+
+def log_exception(where, exc=None):
+    """Helper for `except Exception as e: log_exception('context', e)`.
+
+    Use this instead of a bare `except Exception: pass` anywhere an error
+    is worth a record — it writes the full traceback to the log file.
+    """
+    try:
+        logging.error('[%s] %s', where, exc if exc is not None else '',
+                      exc_info=True)
+    except Exception:
+        pass
+
+
+logging.info('=' * 78)
+logging.info('LOGGING STARTED — pid %s — log file %s', os.getpid(), LOG_FILE)
+logging.info('=' * 78)
 
 # BUGFIX: relative path meant the trade log followed the launch directory, same
 # as the .db issue. Anchor it to the script directory.
@@ -23255,7 +23420,11 @@ class DashboardWSEngine:
         except Exception as e:
             state['timing_brain'] = {'error': str(e)}
         try:
-            state['brain_room'] = FLOOR.state_for_dashboard(60)
+            # 200, not 60: the dashboard appends only the lines it has not
+            # drawn yet, so if a busy scan emitted more than 60 utterances
+            # between two 1 Hz polls the overflow was silently lost from the
+            # transcript panel.
+            state['brain_room'] = FLOOR.state_for_dashboard(200)
         except Exception as e:
             state['brain_room'] = {'enabled': False, 'error': str(e)}
 
@@ -24667,11 +24836,13 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 _v18_log = logging.getLogger("timing_brain")
-if not _v18_log.handlers:
-    _h = logging.StreamHandler()
-    _h.setFormatter(logging.Formatter("%(asctime)s [timing_brain] %(message)s", "%H:%M:%S"))
-    _v18_log.addHandler(_h)
-    _v18_log.setLevel(logging.INFO)
+# Previously this logger carried its OWN StreamHandler and therefore wrote to
+# the console only — none of the timing-brain activity ever reached the log
+# file. Let it propagate to the root logger instead, so it is captured by the
+# rotating file handler like every other subsystem.
+_v18_log.handlers.clear()
+_v18_log.propagate = True
+_v18_log.setLevel(logging.INFO)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -26548,28 +26719,86 @@ class BrainRoom:
         self.print_live = print_live
         self.verbose = verbose
         self.use_color = color
+        # Record the desk's actual configuration. If verbose is False, every
+        # ordinary kind="say" utterance is dropped and the transcript shows
+        # only calls and vetoes — the panel then looks broken when it is in
+        # fact just muted (the dashboard "verbose" checkbox persists this
+        # setting across restarts, so it can be off without you knowing).
+        try:
+            logging.getLogger("brain_room").info(
+                "desk ENABLED — print_live=%s verbose=%s color=%s "
+                "(verbose=False means commentary is suppressed and only "
+                "CALL/VETO lines are kept)",
+                print_live, verbose, color)
+        except Exception:
+            pass
 
     def disable(self):
         self.enabled = False
 
     # ---------------- core emit ----------------
     def say(self, speaker: str, text: str, symbol: str = "", kind: str = "say",
-            **data) -> None:
+            force: bool = False, **data) -> None:
         """Never raises. Commentary failing must not interrupt trading."""
         try:
-            if not self.enabled:
+            # Calls and vetoes are ALWAYS recorded, even before the desk is
+            # formally enabled (enable() only fires once the timing brain has
+            # finished a cold pretrain, which can take 10-15 minutes — the
+            # dashboard used to show an empty transcript for that whole
+            # window, and forever if the boot failed).
+            _always = kind in ("call", "veto") or force
+            if not self.enabled and not _always:
                 return
-            if not self.verbose and kind == "say":
+            # verbose=False keeps ordinary chatter out, but it must NOT be
+            # able to mute the session narration. The morning meeting used to
+            # print its "MORNING MEETING" header (rule() ignores verbose) and
+            # then nothing at all, because every line under it is kind="say"
+            # and the persisted dashboard checkbox had verbose switched off.
+            if self.enabled and not self.verbose and kind == "say" and not force:
                 return
             u = Utterance(time.time(), speaker, text, symbol, kind, data)
             with self._lock:
                 self._seq += 1
                 self.transcript.append(u)
-            if self.print_live:
-                self._print(u)
-            self._append_log(u)
+        except Exception as _e:
+            try:
+                logging.getLogger("brain_room").error(
+                    "transcript say() failed to record: %s", _e, exc_info=True)
+            except Exception:
+                pass
+            return
+
+        # Each sink is guarded SEPARATELY and on purpose. These used to sit
+        # inside one try block in the order print -> jsonl, so a single
+        # exception in _print() (a bad format string, a missing SPEAKERS
+        # entry, a closed stdout) silently swallowed the rest and the desk
+        # went completely quiet — which is exactly the failure that left the
+        # MORNING MEETING header with no debate under it. Now one broken sink
+        # can never mute the others, and it gets reported instead of passed.
+
+        # 1. Main program log FIRST — the permanent record is the one sink
+        #    that must survive even if the console and the jsonl both fail.
+        try:
+            _mark = {"veto": " [VETO]", "call": " [CALL]"}.get(kind, "")
+            logging.getLogger("brain_room").info(
+                "%-6s %-6s | %s%s", speaker, symbol or "-", text, _mark)
         except Exception:
             pass
+
+        # 2. Live console.
+        if self.print_live:
+            try:
+                self._print(u)
+            except Exception as _pe:
+                try:
+                    logging.getLogger("brain_room").error(
+                        "transcript console print failed (desk would have "
+                        "gone silent here): %s", _pe, exc_info=True)
+                except Exception:
+                    pass
+
+        # 3. JSONL transcript file.
+        self._append_log(u)
 
     def _print(self, u: Utterance) -> None:
         sp = SPEAKERS.get(u.speaker, {"color": "", "tag": u.speaker[:6].ljust(6)})
@@ -26587,18 +26816,34 @@ class BrainRoom:
         try:
             with open(self.log_path, "a") as f:
                 f.write(json.dumps(asdict(u)) + "\n")
-        except Exception:
-            pass
+        except Exception as _e:
+            # Was a silent pass — a failing transcript file (bad perms, full
+            # disk) left no trace anywhere. Report it once per failure.
+            try:
+                logging.getLogger("brain_room").error(
+                    "transcript jsonl write to %s failed: %s",
+                    self.log_path, _e)
+            except Exception:
+                pass
 
     def rule(self, title: str = "") -> None:
         if not self.enabled or not self.print_live:
             return
+        if title:
+            try:
+                logging.getLogger("brain_room").info("── %s ──", title)
+            except Exception:
+                pass
         try:
             d, r = (_DIM, _RESET) if self.use_color else ("", "")
             bar = "─" * max(8, 68 - len(title))
             print(f"{d}── {title} {bar}{r}" if title else f"{d}{'─'*72}{r}", flush=True)
-        except Exception:
-            pass
+        except Exception as _e:
+            try:
+                logging.getLogger("brain_room").error(
+                    "transcript rule() print failed: %s", _e)
+            except Exception:
+                pass
 
     # ═══════════════════════════════════════════════════════════════════
     #  SESSION OPEN / CLOSE
@@ -26610,6 +26855,20 @@ class BrainRoom:
             return
         self.session = {"started": time.time(), "equity_open": equity,
                         "calls": 0, "vetoes": 0}
+        # The morning meeting is structural, not chatter — it must appear even
+        # when verbose is switched off, otherwise the transcript shows a bare
+        # "MORNING MEETING" header with nothing under it.
+        _saved_verbose = self.verbose
+        self.verbose = True
+        try:
+            self._open_session_body(equity, regime, vix, head_version,
+                                    foundation_sha, watchlist_size)
+        finally:
+            self.verbose = _saved_verbose
+
+    def _open_session_body(self, equity: float, regime: str, vix: float,
+                           head_version: int, foundation_sha: str,
+                           watchlist_size: int) -> None:
         self.rule("MORNING MEETING")
         self.say("FLOOR", f"Opening equity ${equity:,.2f}. "
                           f"{watchlist_size} names on the board. Let's hear it.")
@@ -27307,7 +27566,11 @@ def v18_timing_gate(symbol, notional_requested, current_price=None,
                 FLOOR.debate_entry(symbol=symbol, probs=probs, attribution=attr,
                                    decision=d, risk_state=rs, price=px, atr=atr,
                                    ceiling=ceiling, extras=extras)
-            except Exception: pass
+            except Exception as _fe:
+                # Was a bare pass: if debate_entry ever threw, the transcript
+                # went silent for every symbol and nothing said why.
+                logging.error('[brain_room] debate_entry failed for %s: %s',
+                              symbol, _fe, exc_info=True)
 
         out.update({'probs': [float(x) for x in probs], 'attribution': attr,
                     'decision': d})
@@ -27955,10 +28218,28 @@ def main():
     # room. Runs in a background thread because a cold install pretrains the
     # foundation once (a few minutes) and the trading loop must not wait on
     # it — v18_timing_gate stays fail-open until V18_TIMING_READY flips True.
+    # Bring the desk up BEFORE the boot thread. v18_boot() only calls
+    # FLOOR.enable() after the foundation pretrain finishes, so the Trade
+    # Decision Transcript on the dashboard used to sit empty for the first
+    # 10-15 minutes of every cold start — and stayed empty permanently if the
+    # boot failed. Enabling here means the desk is recording from second one;
+    # v18_boot() still opens the formal session once the brain is ready.
+    try:
+        if V18_FLOOR_ENABLED:
+            FLOOR.enable(print_live=True, verbose=V18_FLOOR_VERBOSE, color=True)
+            FLOOR.say('FLOOR', 'Desk is live. Timing brain is still booting — '
+                               'commentary runs on legacy logic until it lands.')
+            logging.info('[v18] brain-room desk enabled at startup '
+                         '(verbose=%s)', V18_FLOOR_VERBOSE)
+    except Exception as _e:
+        logging.error('[v18] could not enable brain room at startup: %s',
+                      _e, exc_info=True)
+
     try:
         threading.Thread(target=v18_boot, name="v18-boot", daemon=True).start()
     except Exception as _e:
         print(f"[v18] boot thread failed: {_e}", flush=True)
+        logging.error('[v18] boot thread failed: %s', _e, exc_info=True)
 
     # P1.7: Load dashboard-persisted settings (chandelier mode, LEGACY_BRAINS gate,
     # per-symbol mute thresholds, etc.) before anything else consumes them.
