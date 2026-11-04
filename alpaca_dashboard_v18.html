@@ -1,4 +1,4 @@
-<!-- KSB-MERGE dashboard update applied -->
+<!-- dashboard update applied -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -357,7 +357,7 @@ td.right, th.right { text-align: right; }
 
 
   <div class="card">
-    <div class="card-hd"><h2>🧠 KSB Brains Health</h2><span class="tag" id="ksbHealthTag">—</span></div>
+    <div class="card-hd"><h2>🧠 Brains Health</h2><span class="tag" id="ksbHealthTag">—</span></div>
     <div class="card-bd">
       <table id="ksb-health-tbl" style="font-size:11px; width:100%;">
         <thead><tr>
@@ -1027,7 +1027,7 @@ td.right, th.right { text-align: right; }
             onchange="markDirty('brain_f_max_score_bump', parseFloat(this.value))">
         </div>
 
-        <div class="section-div"><h3>🧠 KSB Brain Suite</h3></div>
+        <div class="section-div"><h3>🧠 Brain Suite</h3></div>
         <div class="inp-row">
           <label>Gate Mode</label>
           <select class="inp-sel" id="sKsbGateMode" onchange="markDirty('ksb_gate_mode', this.value)">
@@ -2909,7 +2909,7 @@ function renderSettings(s) {
   setIf('sDailyLock', s.daily_profit_lock_pct, 'daily_profit_lock_pct');
   setIf('sPsMute', s.persymbol_mute_winrate, 'persymbol_mute_winrate');
   setIf('sPsMin', s.persymbol_min_trades, 'persymbol_min_trades');
-  // KSB gate settings (new)
+  // Brain-gate settings
   setIf('sKsbGateMode', s.ksb_gate_mode, 'ksb_gate_mode');
   setIf('sKsbMinLessons', s.ksb_gate_min_lessons, 'ksb_gate_min_lessons');
   setIf('sOrderMinDollars', s.order_min_dollars, 'order_min_dollars');
@@ -2983,7 +2983,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 connect();
 
-// ═══ KSB Brains Health strip (added by dashboard_update.py) ═══
+// ═══ Brains Health strip ═══
 function renderKsbHealth(bs) {
   const tbody = document.querySelector('#ksb-health-tbl tbody');
   const tag = document.getElementById('ksbHealthTag');

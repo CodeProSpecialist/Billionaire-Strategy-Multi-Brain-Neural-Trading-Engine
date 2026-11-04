@@ -178,14 +178,14 @@ The heart of the UI, and the tile that mirrors a TradingView layout. Each owned 
 
 ![Position charts](docs/images/09-position-charts.png)
 
-### Account · Market Regime · Trade Governor · KSB Brains Health
+### Account · Market Regime · Trade Governor · Brains Health
 
-The header row. Account carries equity, buying power, cash, exposure, effective BP, and margin health. Market Regime shows the live bull/bear/sideways/panic call with VIX, the weak-bull downgrade flag, and the playbook that regime selects. Trade Governor shows whether new entries are permitted at all, the consecutive-loss count, cooldown, and daily profit lock. KSB Brains Health is the one-line status of all seven specialist brains plus the 24-hour retrain scheduler.
+The header row. Account carries equity, buying power, cash, exposure, effective BP, and margin health. Market Regime shows the live bull/bear/sideways/panic call with VIX, the weak-bull downgrade flag, and the playbook that regime selects. Trade Governor shows whether new entries are permitted at all, the consecutive-loss count, cooldown, and daily profit lock. Brains Health is the one-line status of all seven specialist brains plus the 24-hour retrain scheduler.
 
 | | |
 |---|---|
 | ![Account](docs/images/03-account.png) | ![Market regime](docs/images/04-market-regime.png) |
-| ![Trade governor](docs/images/05-trade-governor.png) | ![KSB brains health](docs/images/06-ksb-brains-health.png) |
+| ![Trade governor](docs/images/05-trade-governor.png) | ![Brains health](docs/images/06-brains-health.png) |
 
 ### Nasdaq Bull-Day Odds
 
