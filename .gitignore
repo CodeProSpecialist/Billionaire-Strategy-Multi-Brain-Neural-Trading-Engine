@@ -1,0 +1,31 @@
+# Python build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Bot runtime state — regenerated on every run, never commit
+brains/
+*.db
+*.sqlite
+*.sqlite3
+blacklist.json
+*.log
+
+# Trained model files
+*.keras
+*.h5
+*.ckpt
+meta.json
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
