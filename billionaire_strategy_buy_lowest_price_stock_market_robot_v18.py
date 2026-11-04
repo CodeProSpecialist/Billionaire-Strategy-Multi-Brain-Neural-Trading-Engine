@@ -7363,6 +7363,23 @@ def print_backtest_verdict(symbol, verdict, result):
 BLACKLIST_FILE = os.path.join(_ml_base_dir, 'blacklist.json')
 BLACKLIST_TEMP_DURATION_SECONDS = 72 * 3600   # 72 hours
 
+# ---------------------------------------------------------------------------
+# HARDCODED PERMANENT BLACKLIST SEED — mRNA / RNA vaccine names
+# ---------------------------------------------------------------------------
+# Operator policy: the bot never buys RNA-vaccine companies. This set is
+# merged into the permanent blacklist on every startup, so it survives a
+# deleted//reset blacklist.json and a fresh clone of the repo. Removing one
+# of these from the dashboard clears it for the current session only — it is
+# re-seeded on the next restart. To truly un-blacklist a name, delete it
+# from this set in source.
+BLACKLIST_PERMANENT_SEED = {
+    'MRNA',   # Moderna — mRNA vaccines
+    'BNTX',   # BioNTech — mRNA vaccines
+    'PFE',    # Pfizer — BNT162b2 mRNA vaccine partner
+    'CVAC',   # CureVac — mRNA vaccines
+    'ARCT',   # Arcturus Therapeutics — self-amplifying mRNA vaccines
+}
+
 
 class BlacklistManager:
     """Two-tier symbol blacklist, persisted to disk. Thread-safe."""
@@ -7371,6 +7388,22 @@ class BlacklistManager:
         self.permanent = set()
         self.temporary = {}   # {symbol: expiry_epoch}
         self._load()
+        self._seed_permanent()
+
+    def _seed_permanent(self):
+        """Merge the hardcoded RNA-vaccine seed into the permanent list."""
+        try:
+            new = {s.upper() for s in BLACKLIST_PERMANENT_SEED} - self.permanent
+            if new:
+                self.permanent |= new
+                # Permanent supersedes any temp entry for the same symbol
+                for s in new:
+                    self.temporary.pop(s, None)
+                self._save()
+                logging.info("BlacklistManager: seeded permanent blacklist with "
+                             f"{len(new)} RNA-vaccine symbol(s): {', '.join(sorted(new))}")
+        except Exception as e:
+            logging.warning(f"BlacklistManager: permanent seed failed ({e})")
 
     def _load(self):
         try:
@@ -7444,7 +7477,11 @@ class BlacklistManager:
             self.permanent.discard(sym)
             self.temporary.pop(sym, None)
             self._save()
-        logging.info(f"BlacklistManager: {sym} removed from blacklist")
+        if sym in {s.upper() for s in BLACKLIST_PERMANENT_SEED}:
+            logging.warning(f"BlacklistManager: {sym} removed for this session only — "
+                            "it is in BLACKLIST_PERMANENT_SEED and will be re-added on restart")
+        else:
+            logging.info(f"BlacklistManager: {sym} removed from blacklist")
 
     def snapshot(self):
         """Dashboard payload. Prunes expired temporary entries as it reads."""
