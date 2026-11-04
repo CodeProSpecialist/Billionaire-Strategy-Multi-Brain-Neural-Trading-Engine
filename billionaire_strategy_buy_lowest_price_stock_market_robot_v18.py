@@ -11270,6 +11270,12 @@ PLAYBOOK_BEAR_SIZE_MULT = 1.0          # bear had few recent trades; lower to 0.
 PLAYBOOK_MIN_DOLLAR_VOLUME = 20_000_000  # 20-day average daily $ volume (full-market SIP bars)
 PLAYBOOK_BATCH_SIZE = 200              # symbols per Alpaca data request
 PLAYBOOK_RULES = {   # regime -> (setup, universe, stop_pct, target_pct, max entries per day)
+    # Operator rule (2026-11-04): BULL buys exactly the same way SIDEWAYS
+    # does -- same dip_20d setup, same universe, same stops and targets, same
+    # 25-in-one-pass cap. This supersedes the earlier choice to run the
+    # bull-v8 / dip-score path on bull days; that path is now unused on bull
+    # days (kept in the file, reachable only if this rule is removed).
+    'bull':     ('dip_20d',      'ndx', 0.02, 0.03, 25),
     'sideways': ('dip_20d',      'ndx', 0.02, 0.03, 25),   # 25 in one pass (operator, 2026-11-04)
     'bear':     ('gap_reversal', 'all', 0.02, 0.03, 5),
 }
@@ -25131,7 +25137,8 @@ class DashboardWSEngine:
                 _note = 'Playbook OFF -- old dip/bull strategies active'
             elif _rule:
                 _note = {'bear': 'Gap-down reversals, all 918 stocks, 10:30-11:30 ET',
-                         'sideways': 'Dips in up-trending Nasdaq-100 stocks'}.get(_reg, _rule[0])
+                         'bull': 'Dips in up-trending stocks (same setup as sideways)',
+                         'sideways': 'Dips in up-trending stocks'}.get(_reg, _rule[0])
             else:
                 _note = (f"No new buys in a {_reg.upper()} market -- no setup was "
                          f"profitable in the 1-year backtest (by design)")

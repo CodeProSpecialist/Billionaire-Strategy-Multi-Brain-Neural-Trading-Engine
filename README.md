@@ -32,7 +32,7 @@ Every buy order has to survive a committee. A timing brain scores it, a day-trad
 | **Broker** | Alpaca (paper or live) — market orders only, no resting limit orders |
 | **Universe** | 82 technology, computer and consumer-electronics brands (NASDAQ + NYSE), mid cap and up — scanned and ranked every cycle, **top 25** eligible to buy |
 | **Buy window** | **10:30–11:30 AM Eastern only**, and only when the latched regime is bullish or sideways |
-| **Entries** | Up to **25 positions in a single pass**, cash split equally, on both bull and sideways days |
+| **Entries** | Up to **25 positions in a single pass**, cash split equally. Bull days use the **same setup as sideways** (20-day dip, 2% stop, 3% target) |
 | **Entry signal** | Chandelier Exit (22, 3) direction flip + MACD(12,26,9) histogram reversal off the trough, confirmed on the first reversing bar |
 | **Exit signal** | CE flip, MACD histogram climax, chandelier ATR trail, profit monitor giveback, round-trip rescue, hard stop |
 | **Hold time** | Minutes, not days — most winners are 5-minute moves; a runner is allowed up to an hour while RSI stays elevated |
