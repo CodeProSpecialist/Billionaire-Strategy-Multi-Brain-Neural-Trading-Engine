@@ -16338,7 +16338,14 @@ def run_stock_scanner(show_progress=False):
                  f"names; {len(df)} remain (min market cap "
                  f"${_SCANNER_MIN_MARKET_CAP/1e9:.1f}B)")
     # top 25 per sector, then filter excluded sectors, then top-N overall
-    top = df.groupby('sector', group_keys=False).apply(lambda x: x.nlargest(25, 'score'))
+    # groupby(...).apply(lambda x: x.nlargest(...)) raised a pandas
+    # FutureWarning: grouping columns will be excluded from the operation in a
+    # future version. That is not cosmetic here — the next line reads
+    # top['sector'], which would become a KeyError and take the scanner down.
+    # sort + per-group head(25) is the same result, keeps 'sector', no warning.
+    top = (df.sort_values('score', ascending=False)
+             .groupby('sector', group_keys=False)
+             .head(25))
     top = top[~top['sector'].isin(_SCANNER_EXCLUDED_SECTORS)]
     top = top.nlargest(_SCANNER_CONFIG['chart_top_n'], 'score')
     result = [to_yf(str(s)) for s in top['symbol'].tolist()]
@@ -20191,9 +20198,22 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
                         if _LEGACY_BRAIN_AVAILABLE:
                             try:
                                 _entry_notional = float(filled_qty * filled_price)
+                                # sig['score'] is explicitly set to None on the
+                                # playbook path, and .get('score', 0) does NOT
+                                # help there — the default only applies when the
+                                # key is absent, not when it is present-but-None.
+                                # f"{None:.1f}" raises, and because that happened
+                                # while building the reason string it aborted the
+                                # whole block BEFORE open_position() ever ran, so
+                                # every playbook buy was missing from BrainComms
+                                # memory and from _LEGACY_BRAIN_ENTRY_STATE.
+                                _score = sig.get('score')
+                                _score_txt = (f"{float(_score):.1f}"
+                                              if isinstance(_score, (int, float))
+                                              else "n/a")
                                 _reason = (
                                     f"{'BULL' if is_bull_buy else 'DIP'}-buy "
-                                    f"score={sig.get('score',0):.1f} "
+                                    f"score={_score_txt} "
                                     f"[{'; '.join(sig.get('reasons', []))[:80]}]")
                                 LEGACY_BRAINS.BRAIN_COMMS.open_position(
                                     symbol=yf_symbol,
@@ -20206,6 +20226,13 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
                                 _st['notional'] = _entry_notional
                                 _LEGACY_BRAIN_ENTRY_STATE[yf_symbol.upper()] = _st
                             except Exception as _e:
+                                # Was print-only: this failure silently drops the
+                                # trade from brain memory, so it needs a real log
+                                # entry with a traceback, not a one-line notice.
+                                logging.error(
+                                    "[LEGACY_BRAINS open_position] %s: %s — trade "
+                                    "NOT registered in BrainComms memory",
+                                    yf_symbol, _e, exc_info=True)
                                 print(f"[LEGACY_BRAINS open_position] {yf_symbol}: {_e}")
                         if INTEL is not None:
                             _intel_feats = INTEL.snapshot_features(
