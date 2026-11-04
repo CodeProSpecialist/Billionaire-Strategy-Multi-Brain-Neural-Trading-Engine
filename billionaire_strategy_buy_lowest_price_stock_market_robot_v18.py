@@ -7411,32 +7411,71 @@ class BlacklistManager:
         self._seed_permanent()
 
     def _seed_permanent(self):
-        """Merge the hardcoded RNA-vaccine seed into the permanent list."""
+        """Merge the hardcoded seed into the permanent list at startup.
+
+        Reads whatever blacklist.json held, then rewrites the file ONLY if
+        it was missing one or more seed symbols. A file that already carries
+        the full seed is left untouched, so this is cheap on every restart.
+
+        The seed covers the RNA coronavirus-vaccine makers and the
+        Honeywell / HVAC names; see BLACKLIST_PERMANENT_SEED.
+        """
         try:
-            new = {s.upper() for s in BLACKLIST_PERMANENT_SEED} - self.permanent
+            want = {s.upper() for s in BLACKLIST_PERMANENT_SEED}
+            new = want - self.permanent
             if new:
                 self.permanent |= new
                 # Permanent supersedes any temp entry for the same symbol
                 for s in new:
                     self.temporary.pop(s, None)
                 self._save()
-                logging.info("BlacklistManager: seeded permanent blacklist with "
-                             f"{len(new)} RNA-vaccine symbol(s): {', '.join(sorted(new))}")
+                logging.info("BlacklistManager: blacklist file was missing %d "
+                             "seed symbol(s), rewritten: %s",
+                             len(new), ', '.join(sorted(new)))
+                print(f"  [blacklist] restored {len(new)} missing permanent "
+                      f"entr{'y' if len(new) == 1 else 'ies'}: "
+                      f"{', '.join(sorted(new))}")
+            else:
+                logging.info("BlacklistManager: blacklist file already carries "
+                             "all %d seed symbol(s); no rewrite needed",
+                             len(want))
+            print(f"  [blacklist] {len(self.permanent)} permanent, "
+                  f"{len(self.temporary)} temporary (72h) entries active.")
         except Exception as e:
             logging.warning(f"BlacklistManager: permanent seed failed ({e})")
 
     def _load(self):
+        """Read blacklist.json. A corrupt file is preserved as .corrupt and
+        then rebuilt from the hardcoded seed by _seed_permanent(), rather
+        than leaving the bot running with a silently empty blacklist."""
         try:
             if os.path.exists(BLACKLIST_FILE):
                 with open(BLACKLIST_FILE) as f:
                     data = _ml_json.load(f) or {}
-                self.permanent = set((data.get('permanent') or []))
-                self.temporary = {k: float(v) for k, v in (data.get('temporary') or {}).items()}
+                self.permanent = {str(s).upper() for s in (data.get('permanent') or [])}
+                self.temporary = {str(k).upper(): float(v)
+                                  for k, v in (data.get('temporary') or {}).items()}
                 # Prune already-expired temp entries on load
                 now = time.time()
                 self.temporary = {k: v for k, v in self.temporary.items() if v > now}
         except Exception as e:
-            logging.warning(f"BlacklistManager: load failed ({e})")
+            # Unreadable or malformed JSON. Keep a copy for inspection, then
+            # start from empty so the seed below restores every permanent
+            # entry. Losing the 72h auto entries is acceptable; losing the
+            # permanent ones silently is not.
+            logging.warning("BlacklistManager: load failed (%s); rebuilding "
+                            "from the hardcoded seed", e)
+            try:
+                bad = BLACKLIST_FILE + '.corrupt'
+                os.replace(BLACKLIST_FILE, bad)
+                logging.warning("BlacklistManager: kept the unreadable file "
+                                "as %s", bad)
+                print(f"  [blacklist] {BLACKLIST_FILE} was unreadable; kept a "
+                      f"copy as {bad} and rebuilt from the seed.")
+            except Exception:
+                pass
+            self.permanent = set()
+            self.temporary = {}
 
     def _save(self):
         try:
