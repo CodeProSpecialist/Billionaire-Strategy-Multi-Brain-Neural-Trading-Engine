@@ -7364,7 +7364,7 @@ BLACKLIST_FILE = os.path.join(_ml_base_dir, 'blacklist.json')
 BLACKLIST_TEMP_DURATION_SECONDS = 72 * 3600   # 72 hours
 
 # ---------------------------------------------------------------------------
-# HARDCODED PERMANENT BLACKLIST SEED — mRNA / RNA vaccine names
+# HARDCODED PERMANENT BLACKLIST SEED — RNA coronavirus-vaccine makers
 # ---------------------------------------------------------------------------
 # Operator policy: the bot never buys RNA-vaccine companies. This set is
 # merged into the permanent blacklist on every startup, so it survives a
@@ -7377,7 +7377,12 @@ BLACKLIST_PERMANENT_SEED = {
     'BNTX',   # BioNTech — mRNA vaccines
     'PFE',    # Pfizer — BNT162b2 mRNA vaccine partner
     'CVAC',   # CureVac — mRNA vaccines
-    'ARCT',   # Arcturus Therapeutics — self-amplifying mRNA vaccines
+    'ARCT',   # Arcturus Therapeutics — ARCT-154 / Kostaive sa-mRNA COVID vaccine
+    'CSLLY',  # CSL Ltd ADR — Arcturus partner, commercializes Kostaive sa-mRNA COVID vaccine
+    'CSLAF',  # CSL Ltd ordinary ADR line (same issuer as CSLLY)
+    'DSNKY',  # Daiichi Sankyo ADR — DS-5670 mRNA COVID vaccine (approved in Japan)
+    'DSKYF',  # Daiichi Sankyo ordinary ADR line (same issuer as DSNKY)
+    'MSKKY',  # Meiji Seika Pharma ADR — markets Kostaive mRNA COVID vaccine in Japan
 }
 
 
