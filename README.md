@@ -44,7 +44,7 @@ Every buy order has to survive a committee. A timing brain scores it, a day-trad
 | | |
 |---|---|
 | OS | Ubuntu Linux 24.04 (any modern Linux works) |
-| Python | 3.11 – 3.13 |
+| Python | Anaconda Python 3 (`base` environment), 3.11 – 3.13 |
 | RAM | 16 GB recommended (TensorFlow pretraining is the peak) |
 | Disk | 20 GB free for models, caches, and the SQLite trade database |
 | GPU | Optional — NVIDIA CUDA is auto-detected and the TensorFlow variant is swapped to match |
@@ -60,7 +60,7 @@ TA-Lib is the one dependency pip cannot install on its own — it needs the C li
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential wget python3-pip python3-venv git
+sudo apt install -y build-essential wget git
 ```
 
 ```bash
@@ -82,11 +82,12 @@ git clone https://github.com/CodeProSpecialist/Billionaire-Strategy-Multi-Brain-
 cd Billionaire-Strategy-Multi-Brain-Neural-Trading-Engine
 ```
 
-### 3. Python environment
+### 3. Python packages
+
+The robot runs in the **Anaconda `base` environment** — no virtual environment needed. Open a terminal with `base` active (Anaconda activates it by default; if not, run `conda activate base`) and install the packages there:
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
+conda activate base
 pip install --upgrade pip
 pip install alpaca-trade-api alpaca-py pytz numpy TA-Lib yfinance SQLAlchemy \
             ratelimit pandas-market-calendars pandas schedule websockets requests \
@@ -119,7 +120,7 @@ Put these in `~/.bashrc` so they survive a reboot. **Start on paper.** Switch th
 ## ▶️ Run it
 
 ```bash
-source venv/bin/activate
+conda activate base
 python3 billionaire_strategy_buy_lowest_price_stock_market_robot_v18.py
 ```
 
