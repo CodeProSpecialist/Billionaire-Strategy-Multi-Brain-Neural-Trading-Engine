@@ -10561,11 +10561,32 @@ EARLY_MORNING_GATE_MODE = 'armed'           # 'armed' | 'shadow' | 'off'
 # that verdict holds for the rest of the session. It is not re-evaluated every
 # cycle, so the bot cannot flip from "not profitable today" into buying because
 # SPY twitched over its 20-day SMA at 11:15.
-REGIME_ASSESS_ET = _dt_time(10, 30)     # when the daily regime verdict is taken
+# The regime is MEASURED across the half hour BEFORE the window opens
+# (REGIME_SAMPLE_START_ET .. REGIME_ASSESS_ET, i.e. 10:00-10:30 ET) and the
+# verdict is LATCHED at REGIME_ASSESS_ET, exactly as the buy window opens.
+# Sampling repeatedly and taking the majority is deliberate: a single
+# instantaneous read at 10:30 can be a one-off twitch of SPY across its 20-day
+# SMA, and that twitch would otherwise decide whether the whole day trades.
+REGIME_SAMPLE_START_ET = _dt_time(10, 0)   # begin sampling the regime
+REGIME_ASSESS_ET = _dt_time(10, 30)        # verdict is frozen here (window open)
+
+# ---------------- PRIMARY DEPLOYMENT BUY WINDOW ----------------
+# Operator rule: orders are placed ONLY inside the one-hour primary deployment
+# buy window, 10:30-11:30 AM Eastern, and only when the latched regime is
+# bullish or sideways. A bearish (or panic, or unmeasurable) regime buys
+# nothing at all that day.
+#
+# This governs ENTRIES ONLY. Exits -- stops, the profit monitor, the
+# chandelier, the scale-outs and the close sweeps -- are never gated by it: an
+# open position must always be able to leave regardless of the clock.
+PRIMARY_DEPLOYMENT_START_ET = _dt_time(10, 30)
+PRIMARY_DEPLOYMENT_END_ET   = _dt_time(11, 30)
+PRIMARY_DEPLOYMENT_REGIMES  = ('bull', 'sideways')   # bear/panic/unknown: no buys
 
 REGIME_BUY_WINDOW_END_ET = {
-    'bull':     _dt_time(12, 30),       # no buys after 12:30 PM ET
-    'sideways': _dt_time(11, 15),       # no buys after 11:15 AM ET
+    # Both tradable regimes close at the end of the primary deployment window.
+    'bull':     PRIMARY_DEPLOYMENT_END_ET,
+    'sideways': PRIMARY_DEPLOYMENT_END_ET,
     # 'bear', 'panic' and anything unrecognized are absent on purpose ->
     # a missing key means NO BUYS AT ALL for that regime.
 }
@@ -10575,6 +10596,45 @@ REGIME_NOT_PROFITABLE_MSG = "market is not profitable today"
 # {'YYYY-MM-DD': regime_string} -- the latched verdict for the session.
 _regime_latch = {}
 _regime_latch_lock = threading.Lock()
+# {'YYYY-MM-DD': [regime_string, ...]} -- samples taken 10:00-10:30 ET.
+_regime_samples = {}
+
+
+def _regime_take_sample(today, now_et):
+    """Read the regime once and record it as a 10:00-10:30 ET sample.
+
+    Caller must hold _regime_latch_lock. Returns the sampled regime string.
+    """
+    try:
+        regime = str((get_market_regime() or {}).get('regime') or 'unknown').lower()
+    except Exception as e:
+        logging.debug("regime sample at %s ET failed: %s",
+                      now_et.strftime('%H:%M:%S'), e)
+        regime = 'unknown'
+    samples = _regime_samples.setdefault(today, [])
+    # One sample a minute is plenty; the buy loop runs far more often than that.
+    if len(samples) < 40:
+        samples.append(regime)
+    for stale in [d for d in _regime_samples if d != today]:
+        del _regime_samples[stale]
+    return regime
+
+
+def get_regime_sampling_status():
+    """(state, regime_or_None, n_samples) for the dashboard tile.
+
+    state is one of 'pending' (before 10:00 ET), 'sampling' (10:00-10:30 ET,
+    no verdict yet) or 'latched' (10:30 ET onward).
+    """
+    now_et = datetime.now(eastern)
+    today = now_et.date().isoformat()
+    with _regime_latch_lock:
+        n = len(_regime_samples.get(today, []))
+        if today in _regime_latch:
+            return 'latched', _regime_latch[today], n
+    if now_et.time() < REGIME_SAMPLE_START_ET:
+        return 'pending', None, n
+    return 'sampling', None, n
 
 
 def get_latched_session_regime():
@@ -10592,18 +10652,33 @@ def get_latched_session_regime():
         if today in _regime_latch:
             return _regime_latch[today]
 
+        if now_et.time() < REGIME_SAMPLE_START_ET:
+            return None      # too early -- sampling has not started
+
         if now_et.time() < REGIME_ASSESS_ET:
-            return None      # too early -- nothing to latch yet
+            # 10:00-10:30 ET: measure, but do not commit. Nothing may be
+            # bought before 10:30 anyway, so returning None here is safe.
+            _regime_take_sample(today, now_et)
+            return None
 
-        try:
-            regime = (get_market_regime() or {}).get('regime') or 'unknown'
-        except Exception as e:
-            logging.error("regime latch: get_market_regime() failed (%s) -- "
-                          "latching 'unknown' (no buys today)", e, exc_info=True)
-            regime = 'unknown'
+        # 10:30 ET or later: freeze the verdict for the rest of the session.
+        samples = list(_regime_samples.get(today, []))
+        if not samples:
+            # The bot was started after 10:30 (or every sample failed) --
+            # fall back to a single fresh read.
+            samples = [_regime_take_sample(today, now_et)]
 
-        regime = str(regime).lower()
+        # Majority vote; ties break toward the more conservative regime so a
+        # split decision never talks us into buying.
+        _order = ['unknown', 'panic', 'bear', 'sideways', 'bull']
+        regime = max(set(samples),
+                     key=lambda r: (samples.count(r),
+                                    -_order.index(r) if r in _order else 0))
         _regime_latch[today] = regime
+        logging.info("Regime samples %s ET (%d): %s -> %s",
+                     now_et.strftime('%H:%M:%S'), len(samples),
+                     dict((r, samples.count(r)) for r in set(samples)),
+                     regime.upper())
         # Keep the latch from growing without bound across a long-lived run.
         for stale in [d for d in _regime_latch if d != today]:
             del _regime_latch[stale]
@@ -10613,6 +10688,75 @@ def get_latched_session_regime():
         print("  [regime latch] %s ET -> market regime for today is %s"
               % (now_et.strftime('%H:%M'), regime.upper()))
         return regime
+
+
+def primary_deployment_status(now_et=None):
+    """State of the 10:30-11:30 ET primary deployment buy window.
+
+    Returns a dict the buy gates and the dashboard tile both read:
+        open         -- bool: inside the hour AND the regime allows buying
+        time_open    -- bool: inside the hour, regardless of regime
+        regime_ok    -- bool: latched regime is bull or sideways
+        regime       -- latched regime, or None before 10:30 ET
+        state        -- 'pending' | 'sampling' | 'open' | 'blocked' | 'closed'
+        reason       -- one line of plain English for the log and the tile
+
+    'blocked' means the hour is running but the regime vetoed it, which is a
+    different thing from the hour being shut, and the tile shows it
+    differently so an idle bearish day reads as intentional.
+    """
+    now_et = now_et or datetime.now(eastern)
+    t = now_et.time()
+    time_open = PRIMARY_DEPLOYMENT_START_ET <= t < PRIMARY_DEPLOYMENT_END_ET
+    _w = ("%s-%s ET" % (PRIMARY_DEPLOYMENT_START_ET.strftime('%H:%M'),
+                        PRIMARY_DEPLOYMENT_END_ET.strftime('%H:%M')))
+
+    regime = None
+    try:
+        regime = get_latched_session_regime()
+    except Exception as e:
+        logging.debug("primary deployment: regime lookup failed: %s", e)
+    regime_ok = regime in PRIMARY_DEPLOYMENT_REGIMES
+
+    if not time_open:
+        if t < PRIMARY_DEPLOYMENT_START_ET:
+            state = 'sampling' if t >= REGIME_SAMPLE_START_ET else 'pending'
+            reason = ("primary deployment window %s opens at %s ET (now %s ET)"
+                      % (_w, PRIMARY_DEPLOYMENT_START_ET.strftime('%H:%M'),
+                         t.strftime('%H:%M')))
+            if state == 'sampling':
+                reason += " -- measuring today's regime now"
+        else:
+            state = 'closed'
+            reason = ("primary deployment window %s closed at %s ET (now %s ET)"
+                      % (_w, PRIMARY_DEPLOYMENT_END_ET.strftime('%H:%M'),
+                         t.strftime('%H:%M')))
+        return {'open': False, 'time_open': False, 'regime_ok': regime_ok,
+                'regime': regime, 'state': state, 'reason': reason,
+                'window': _w}
+
+    if not regime_ok:
+        return {'open': False, 'time_open': True, 'regime_ok': False,
+                'regime': regime, 'state': 'blocked', 'window': _w,
+                'reason': ("primary deployment window %s is open but the "
+                           "regime is %s -- buys allowed only in %s"
+                           % (_w, (regime or 'unmeasured').upper(),
+                              ' or '.join(r.upper()
+                                          for r in PRIMARY_DEPLOYMENT_REGIMES)))}
+
+    return {'open': True, 'time_open': True, 'regime_ok': True,
+            'regime': regime, 'state': 'open', 'window': _w,
+            'reason': ("primary deployment window %s OPEN -- %s regime"
+                       % (_w, regime.upper()))}
+
+
+def check_primary_deployment_window(now_et=None):
+    """(allow, reason) -- the hard gate on placing any BUY order.
+
+    Entries only. Never consulted on the sell side.
+    """
+    st = primary_deployment_status(now_et)
+    return bool(st['open']), st['reason']
 
 
 def check_regime_buy_window(now_et=None):
@@ -11147,6 +11291,51 @@ MRVL MELI META MCHP MU MSFT MSTR MRNA MDLZ MPWR MNST NBIS NFLX NVDA NXPI ORLY OD
 PLTR PANW PAYX PYPL PDD PEP QCOM REGN RKLB ROP ROST SNDK STX SHOP SPCX SBUX SNPS TMUS
 TTWO TER TSLA TXN TRI VRTX WMT WDC WDAY XEL
 """.split()
+
+# ---------------- Quarter-of-the-Nasdaq rotation ----------------
+# Operator rule: trade one QUARTER of the Nasdaq-100 at a time -- 25 symbols
+# per session -- rather than scanning all 100 every cycle. The quarter
+# ROTATES by trading day, so slice 0 runs today, slice 1 tomorrow, and the
+# whole index is covered every four sessions. Rotating (rather than always
+# re-ranking and taking the same top 25) is what keeps the bot from grinding
+# the same handful of mega-caps day after day.
+#
+# The slice is computed from the ET date so every thread, and a mid-session
+# restart, all land on the SAME 25 names for the day.
+NDX_QUARTER_MODE = 'armed'      # 'armed' = 25/session | 'off' = full 100
+NDX_QUARTER_COUNT = 4           # quarters -> 25 names each
+
+# Standing operator policy: never buy RNA/mRNA coronavirus-vaccine companies.
+# Filtered out of the Nasdaq-100 before the quarter is cut, so excluding them
+# never silently shrinks one quarter while leaving the others full size.
+NDX_PERMANENT_EXCLUSIONS = {'MRNA'}
+
+
+def _ndx_tradable_universe():
+    """Nasdaq-100 with the permanently excluded names removed."""
+    return [s for s in PLAYBOOK_UNIVERSE_NDX
+            if s.upper() not in NDX_PERMANENT_EXCLUSIONS]
+
+
+def ndx_quarter_for_date(now_et=None):
+    """(symbols, slice_index, n_slices) -- today's quarter of the Nasdaq-100.
+
+    With NDX_QUARTER_MODE != 'armed' this returns the whole index and a slice
+    index of None, so the caller's logging still reads correctly.
+    """
+    universe = _ndx_tradable_universe()
+    if NDX_QUARTER_MODE != 'armed' or NDX_QUARTER_COUNT < 2:
+        return universe, None, 1
+    now_et = now_et or datetime.now(eastern)
+    # toordinal() advances by one each calendar day; weekends simply mean some
+    # slices come up on days the market is shut, which costs nothing.
+    idx = now_et.date().toordinal() % NDX_QUARTER_COUNT
+    ordered = sorted(universe)
+    # Stride slicing (every 4th name) rather than contiguous blocks: a
+    # contiguous alphabetical block would hand one day all the A-names and
+    # another all the T-names, which correlates each day's basket by sector
+    # far more than it looks like it would.
+    return ordered[idx::NDX_QUARTER_COUNT], idx, NDX_QUARTER_COUNT
 
 # ---------------- Portfolio-level liquidation (phase 2 of each sweep) ----------------
 # After phase 1 sells whatever individual positions are already profitable,
@@ -19149,9 +19338,19 @@ def _playbook_scan_candidates(regime):
     if remaining <= 0:
         print(f"[playbook] {regime.upper()}: daily limit of {max_per_day} entries reached.")
         return []
-    if setup == 'gap_reversal' and not (now_et.hour == 10 and now_et.minute >= 30):
-        return []   # only valid in the 10:30-11:30 hour, right after the first hour closes
-    universe = PLAYBOOK_UNIVERSE_ALL if uni_key == 'all' else PLAYBOOK_UNIVERSE_NDX
+    # Only valid inside the primary deployment hour, right after the first
+    # hour of the session closes. (Was an inline 10:xx check that actually
+    # expired at 11:00, not 11:30.)
+    if setup == 'gap_reversal' and not (
+            PRIMARY_DEPLOYMENT_START_ET <= now_et.time() < PRIMARY_DEPLOYMENT_END_ET):
+        return []
+    if uni_key == 'all':
+        universe = PLAYBOOK_UNIVERSE_ALL
+    else:
+        universe, _q_idx, _q_n = ndx_quarter_for_date(now_et)
+        if _q_idx is not None:
+            print(f"[playbook] Nasdaq-100 quarter {_q_idx + 1}/{_q_n} today: "
+                  f"{len(universe)} symbols.")
     api_syms = sorted({to_alpaca(s) for s in universe})
     ctx = _pb_daily_context_all(api_syms, now_et)
     liquid = [s for s in api_syms if s in ctx and ctx[s][2] >= PLAYBOOK_MIN_DOLLAR_VOLUME]
@@ -19754,6 +19953,16 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
         _LEGACY_BRAIN_AVAILABLE_THIS_CYCLE = False
         logging.error("LEGACY_BRAINS observe/feed cycle failed: %s",
                       _oe, exc_info=True)
+
+    # Drive the 10:00-10:30 ET regime sampling. This MUST run before the
+    # 10:30 gate below: the gate returns early, so if the sampler were called
+    # only after it, no sample would ever be taken and the 10:30 latch would
+    # fall back to a single instantaneous read. Returns None until 10:30 and
+    # never places an order, so it is safe here.
+    try:
+        get_latched_session_regime()
+    except Exception as _re:
+        logging.debug("regime sampling call failed: %s", _re)
 
     _now_et = datetime.now(eastern).time()
     if _now_et < EARLY_MORNING_CUTOFF_ET:
@@ -20976,6 +21185,25 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
                         f"< ${_order_floor:.2f} floor — rounding up")
                     notional = _order_floor
                 notional = round(float(notional), 2)
+
+                # ---- Hard primary-deployment gate (last line of defence) ----
+                # The cycle-level gate above already checked this, but a buy
+                # cycle can run for minutes: the window can close, or the
+                # regime latch can resolve, between the top of the cycle and
+                # this submit. Re-checking at the point of no return is the
+                # only way to guarantee no order is ever placed outside
+                # 10:30-11:30 ET or in a bearish regime.
+                _pd_ok, _pd_why = check_primary_deployment_window()
+                if not _pd_ok:
+                    print(f"  [primary deployment] {yf_symbol}: {_pd_why}. "
+                          f"Order NOT placed.")
+                    logging.info("Buy of %s blocked at submit — primary "
+                                 "deployment: %s", yf_symbol, _pd_why)
+                    try:
+                        position_book.release(api_symbol)
+                    except Exception:
+                        pass
+                    continue
 
                 buy_order = api.submit_order(
                     symbol=api_symbol,
@@ -24749,6 +24977,35 @@ class DashboardWSEngine:
         except Exception as e:
             state['regime'] = {'error': str(e)}
 
+        # Primary deployment buy window (10:30-11:30 ET) tile
+        try:
+            _pd = primary_deployment_status()
+            _sample_state, _sample_regime, _sample_n = get_regime_sampling_status()
+            _q_syms, _q_idx, _q_n = ndx_quarter_for_date()
+            state['primary_deployment'] = {
+                'open': bool(_pd['open']),
+                'time_open': bool(_pd['time_open']),
+                'regime_ok': bool(_pd['regime_ok']),
+                'state': _pd['state'],
+                'regime': _pd['regime'],
+                'reason': _pd['reason'],
+                'window': _pd['window'],
+                'start_et': PRIMARY_DEPLOYMENT_START_ET.strftime('%H:%M'),
+                'end_et': PRIMARY_DEPLOYMENT_END_ET.strftime('%H:%M'),
+                'allowed_regimes': list(PRIMARY_DEPLOYMENT_REGIMES),
+                'sample_state': _sample_state,
+                'sample_count': _sample_n,
+                'sample_window': "%s-%s ET" % (
+                    REGIME_SAMPLE_START_ET.strftime('%H:%M'),
+                    REGIME_ASSESS_ET.strftime('%H:%M')),
+                'ndx_quarter': (None if _q_idx is None else _q_idx + 1),
+                'ndx_quarter_of': _q_n,
+                'ndx_symbol_count': len(_q_syms),
+                'ndx_symbols': list(_q_syms),
+            }
+        except Exception as e:
+            state['primary_deployment'] = {'error': str(e)}
+
         # Regime playbook status (so idle bull days read as intentional)
         try:
             _reg = (state.get('regime') or {}).get('regime', 'unknown')
@@ -24768,7 +25025,7 @@ class DashboardWSEngine:
                 'regime': _reg,
                 'setup': _rule[0] if (_rule and PLAYBOOK_ENABLED) else None,
                 'universe': (len(PLAYBOOK_UNIVERSE_ALL) if _rule and _rule[1] == 'all'
-                             else len(PLAYBOOK_UNIVERSE_NDX) if _rule else 0),
+                             else len(ndx_quarter_for_date()[0]) if _rule else 0),
                 'stop_pct': _rule[2] if _rule else None,
                 'target_pct': _rule[3] if _rule else None,
                 'entries_today': _PB_DAY_COUNT.get((_today, _reg), 0),

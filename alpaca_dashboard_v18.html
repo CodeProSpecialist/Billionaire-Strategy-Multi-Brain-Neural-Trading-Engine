@@ -325,6 +325,28 @@ td.right, th.right { text-align: right; }
     </div>
   </div>
 
+  <div class="card" id="pdCard">
+    <div class="card-hd"><h2>🚀 Primary Deployment One Hour Buy Window</h2>
+      <span class="tag" id="pdTag">—</span></div>
+    <div class="card-bd">
+      <div id="pd-lamp" style="border-radius:8px;padding:10px 12px;margin-bottom:8px;
+           text-align:center;font-weight:700;font-size:13px;letter-spacing:.04em;
+           background:var(--bg3);color:var(--fg3);">—</div>
+      <div style="font-size:11px;color:var(--fg2);line-height:1.45;
+           padding:0 2px 8px 2px;">
+        If we don't buy during this one hour, we do not buy at all today.
+      </div>
+      <div class="kv">
+        <div class="k">Window</div><div class="v" id="pd-window">—</div>
+        <div class="k">Regime</div><div class="v" id="pd-regime">—</div>
+        <div class="k">Measured</div><div class="v" id="pd-sample">—</div>
+        <div class="k">NDX Quarter</div><div class="v" id="pd-quarter">—</div>
+      </div>
+      <div id="pd-reason" style="font-size:11px;color:var(--fg3);padding-top:6px;
+           line-height:1.4"></div>
+    </div>
+  </div>
+
   <div class="card">
     <div class="card-hd"><h2>📈 Market Regime</h2><span class="tag" id="regTag">—</span></div>
     <div class="card-bd">
@@ -1395,6 +1417,7 @@ function render(s) {
   renderAccount(s.account);
   renderTimingBrain(s.timing_brain);
   renderBrainRoom(s.brain_room);
+  renderPrimaryDeployment(s.primary_deployment);
   renderRegime(s.regime);
   renderPlaybook(s.playbook);
   renderNasdaqOutlook(s.nasdaq_outlook);
@@ -1667,6 +1690,64 @@ function renderAccount(a) {
   const tag = document.getElementById('acctTag');
   tag.textContent = a.healthy ? 'HEALTHY' : 'DANGER';
   tag.className = 'tag ' + (a.healthy ? 'tag-green' : 'tag-red');
+}
+
+// Primary deployment buy window (10:30-11:30 ET). The lamp has three states
+// on purpose: GREEN only when an order could actually be placed right now,
+// AMBER when the hour is running but the regime vetoed it (so an idle
+// bullish-looking day reads as a deliberate block, not a hung bot), and grey
+// when the hour simply isn't running.
+function renderPrimaryDeployment(p) {
+  const set = (id, t, cls) => { const el = document.getElementById(id);
+    if (el) { el.textContent = t; if (cls !== undefined) el.className = 'v ' + cls; } };
+  const lamp = document.getElementById('pd-lamp');
+  const tag  = document.getElementById('pdTag');
+  if (!lamp || !tag) return;
+  if (!p || p.error) {
+    lamp.textContent = '—';
+    lamp.style.background = 'var(--bg3)'; lamp.style.color = 'var(--fg3)';
+    tag.textContent = '—'; tag.className = 'tag';
+    set('pd-reason', '');
+    const rn = document.getElementById('pd-reason');
+    if (rn) rn.textContent = p && p.error ? ('error: ' + p.error) : '';
+    return;
+  }
+
+  let label, bg, fg, tagTxt, tagCls;
+  if (p.open) {
+    label = '● BUY WINDOW OPEN';
+    bg = 'rgba(16,185,129,0.18)'; fg = 'var(--green)';
+    tagTxt = 'OPEN'; tagCls = 'tag tag-green';
+  } else if (p.time_open) {
+    label = '● WINDOW OPEN — REGIME BLOCKED';
+    bg = 'rgba(245,158,11,0.15)'; fg = 'var(--amber)';
+    tagTxt = 'BLOCKED'; tagCls = 'tag tag-amber';
+  } else if (p.state === 'sampling') {
+    label = '○ MEASURING REGIME';
+    bg = 'rgba(88,166,255,0.13)'; fg = 'var(--blue)';
+    tagTxt = 'SAMPLING'; tagCls = 'tag tag-amber';
+  } else {
+    label = p.state === 'closed' ? '○ WINDOW CLOSED' : '○ WINDOW NOT OPEN YET';
+    bg = 'var(--bg3)'; fg = 'var(--fg3)';
+    tagTxt = p.state === 'closed' ? 'CLOSED' : 'WAITING'; tagCls = 'tag';
+  }
+  lamp.textContent = label;
+  lamp.style.background = bg;
+  lamp.style.color = fg;
+  tag.textContent = tagTxt;
+  tag.className = tagCls;
+
+  set('pd-window', p.window || '—', '');
+  const okCls = p.regime_ok ? 'green' : (p.regime ? 'red' : '');
+  set('pd-regime', p.regime ? p.regime.toUpperCase()
+                            : (p.state === 'sampling' ? 'measuring…' : 'not yet measured'),
+      okCls);
+  set('pd-sample', `${p.sample_window || '—'} · ${p.sample_count || 0} samples`, '');
+  set('pd-quarter', p.ndx_quarter
+        ? `${p.ndx_quarter} of ${p.ndx_quarter_of} · ${p.ndx_symbol_count} symbols`
+        : `full index · ${p.ndx_symbol_count || 0} symbols`, '');
+  const note = document.getElementById('pd-reason');
+  if (note) note.textContent = p.reason || '';
 }
 
 function renderRegime(r) {

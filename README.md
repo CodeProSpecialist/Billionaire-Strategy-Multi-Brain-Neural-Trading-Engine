@@ -17,6 +17,7 @@ Every buy order has to survive a committee. A timing brain scores it, a day-trad
 - [Install](#-install)
 - [Run it](#-run-it)
 - [The dashboard, tile by tile](#-the-dashboard-tile-by-tile)
+  - [Primary Deployment One Hour Buy Window](#primary-deployment-one-hour-buy-window)
 - [The features that actually move the needle](#-the-features-that-actually-move-the-needle)
 - [Configuration reference](#-configuration-reference)
 - [Troubleshooting](#-troubleshooting)
@@ -29,7 +30,8 @@ Every buy order has to survive a committee. A timing brain scores it, a day-trad
 | | |
 |---|---|
 | **Broker** | Alpaca (paper or live) — market orders only, no resting limit orders |
-| **Universe** | NASDAQ-listed mid- and large-cap technology names, plus an S&P 500 fallback pool |
+| **Universe** | A rotating quarter of the Nasdaq-100 — 25 symbols per session, full index every four days |
+| **Buy window** | **10:30–11:30 AM ET only**, and only when the latched regime is bullish or sideways |
 | **Entry signal** | Chandelier Exit (22, 3) direction flip + MACD(12,26,9) histogram reversal off the trough, confirmed on the first reversing bar |
 | **Exit signal** | CE flip, MACD histogram climax, chandelier ATR trail, profit monitor giveback, round-trip rescue, hard stop |
 | **Hold time** | Minutes, not days — most winners are 5-minute moves; a runner is allowed up to an hour while RSI stays elevated |
@@ -177,6 +179,28 @@ Equity, exposure, open count, unrealized P&L, and a best/worst line, with the le
 The heart of the UI, and the tile that mirrors a TradingView layout. Each owned position gets live 1-minute candlesticks with the Chandelier Exit (22,3) step line drawn in its active direction, **Buy** and **Sell** flags printed at every CE flip, the MACD(12,26,9) histogram with both lines underneath, and the live RSI(14) read in the header. Symbols the robot is watching but does not own are rendered too, tagged `WATCHING TO BUY`.
 
 ![Position charts](docs/images/09-position-charts.png)
+
+### Primary Deployment One Hour Buy Window
+
+The one tile that answers "why isn't it buying?" at a glance. Orders are placed **only** between **10:30 and 11:30 AM Eastern**, and only when the day's latched regime is bullish or sideways — a bearish, panicked, or unmeasurable regime buys nothing at all. **If the robot doesn't buy during that one hour, it does not buy at all that day** — there is no later window and no catch-up.
+
+![Primary deployment buy window](docs/images/primary_deployment_window.png)
+
+The lamp has three states on purpose:
+
+| Lamp | Meaning |
+|---|---|
+| 🟢 **BUY WINDOW OPEN** | Inside the hour *and* the regime permits — an order can be placed right now |
+| 🟠 **WINDOW OPEN — REGIME BLOCKED** | The hour is running, but the regime vetoed the day |
+| ⚪ **WAITING / CLOSED / MEASURING** | Outside the hour, or sampling the regime ahead of it |
+
+The amber state matters: without it, a bearish day and a hung robot look identical from across the room.
+
+**Regime is measured, not glanced at.** From **10:00 to 10:30 ET** the robot samples the SPY + VIX regime repeatedly and, at 10:30, latches the **majority verdict** for the rest of the session. A split decision breaks toward the more conservative regime. The latch is frozen — the robot cannot talk itself into buying at 11:15 because SPY twitched across its 20-day SMA.
+
+**A quarter of the Nasdaq at a time.** Each session scans **25 of the Nasdaq-100**, and the quarter rotates by trading day, so the full index is covered every four sessions. The slice is a stride (every 4th name alphabetically), not a contiguous block — a contiguous block would hand one day all the A-names and correlate the basket by sector far more than it appears to.
+
+The window is an **entry** gate only. Stops, the profit monitor, the chandelier trail, scale-outs, and the close sweeps are never gated by it — an open position can always leave, at any hour, in any regime. The check is enforced twice: once at the top of the buy cycle, and again immediately before `submit_order`, because a scan can run for minutes and the window can close underneath it.
 
 ### Account · Market Regime · Trade Governor · Brains Health
 
@@ -365,7 +389,14 @@ The constants live near the top of the `.py` file; the dashboard-editable ones a
 | `BACKTEST_BRAIN_MODE` | `armed` | Pre-trade backtest veto |
 | `BACKTEST_MIN_WIN_RATE` | `0.50` | Regime-weighted win-rate floor |
 | `BACKTEST_MIN_SAMPLES` | `20` | Below this the backtest abstains |
-| `EARLY_MORNING_CUTOFF_ET` | `10:05` | When the early gate opens fully |
+| `PRIMARY_DEPLOYMENT_START_ET` | `10:30` | Opens the one-hour buy window |
+| `PRIMARY_DEPLOYMENT_END_ET` | `11:30` | Closes it — no order is placed after this |
+| `PRIMARY_DEPLOYMENT_REGIMES` | `('bull','sideways')` | Regimes allowed to buy; everything else buys nothing |
+| `REGIME_SAMPLE_START_ET` | `10:00` | Regime sampling begins |
+| `REGIME_ASSESS_ET` | `10:30` | Majority verdict is latched for the session |
+| `NDX_QUARTER_MODE` | `armed` | `armed` = 25 Nasdaq-100 names/session, `off` = full 100 |
+| `NDX_QUARTER_COUNT` | `4` | Number of rotating slices |
+| `EARLY_MORNING_CUTOFF_ET` | `10:30` | When the early gate opens fully |
 | `EARLY_MORNING_MIN_DROP_PCT` | `0.02` | Required dislocation before the cutoff |
 | `BRAIN_B_MODE` / `BRAIN_B_MIN_SAFE` | `armed` / `0.40` | Risk brain veto and its threshold |
 | `BRAIN_D_MODE` | `shadow` | Portfolio manager — nudges size, never vetoes |
