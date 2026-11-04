@@ -1,12 +1,12 @@
 # 🤖 Billionaire Strategy Multi-Brain Neural Trading Engine
 
-> **A single-file Python day-trading robot for Alpaca, with a frozen-foundation neural timing brain, a fleet of specialist brains that must agree before capital moves, and a real-time 1080p operations dashboard.**
+> **A single-file Python day-trading robot for Alpaca, with a frozen-foundation neural timing brain, a fleet of specialist brains that must agree before capital moves, and a real-time operations dashboard.**
 
 Every buy order has to survive a committee. A timing brain scores it, a day-trade brain checks the chart, a risk sentinel checks the book, a correlation guard checks the sector, a manager brain casts the deciding vote — and a pre-trade backtest replays the robot's own entry and exit rules on that symbol's recent history before a dollar is committed.
 
-![Dashboard overview](docs/images/00-dashboard-1080p.png)
+![Dashboard overview](docs/images/00-dashboard-overview.png)
 
-<sub>*Screenshots throughout this README are captured from the real `alpaca_dashboard_v18.html` at 1920×1080 running against a simulated market feed. The layout, indicators, and computed values are genuine; the account balances, symbols, and P&L are sample data, not a trading record.*</sub>
+<sub>*Screenshots throughout this README are captured from the real `alpaca_dashboard_v18.html` running against a simulated market feed. The layout, indicators, and computed values are genuine; the account balances, symbols, and P&L are sample data, not a trading record.*</sub>
 
 ---
 
@@ -158,7 +158,7 @@ alpaca_dashboard_v18.html?wsPort=8765&token=YOUR_TOKEN
 
 **First run takes a while.** The brains pretrain before the first trade: Brain B (risk) and Brain D (portfolio) on 20,000 synthetic snapshots each, then the timing brain's head on real historical sequences, then Brain F (bullish picker). On CPU this is tens of minutes. It happens once — the models are cached on disk and reloaded after that.
 
-> ⚠️ The dashboard listens on port **8765**, the same port as the Kalshi robot. Do not run both bots on the same host at the same time.
+> ⚠️ The dashboard listens on port **8765**. If another program on the host already uses that port, set `BOT_DASHBOARD_PORT` to something else.
 
 ---
 
@@ -233,7 +233,7 @@ Per-position cards: quantity, entry, current, peak, dollar and percent P&L, and 
 
 ![Profit monitor daytrade tile](docs/images/18-profit-monitor-daytrade.png)
 
-### Brain Suite (Kalshi-Style Fleet)
+### Brain Suite
 
 The seven specialist brains as cards — volatility regime, capital allocator, profit growth, risk sentinel, correlation guard, day-trade brain, chandelier brain — each with its trained/cold state, its current recommendation, and its update count.
 
@@ -389,7 +389,7 @@ The constants live near the top of the `.py` file; the dashboard-editable ones a
 
 **It barely trades** — read the Decision Log tile. Usually it is the early-morning gate, the backtest veto, or the Trade Governor cooldown, and the log names which one.
 
-**Port already in use** — the Kalshi robot uses 8765 too. Run one at a time, or set `BOT_DASHBOARD_PORT`.
+**Port already in use** — something else on the host is on 8765. Set `BOT_DASHBOARD_PORT` to a free port and pass the matching `?wsPort=` to the dashboard page.
 
 ---
 
