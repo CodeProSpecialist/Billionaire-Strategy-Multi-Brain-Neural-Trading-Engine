@@ -20224,6 +20224,17 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
                                 # (may differ from pre-fill estimate).
                                 _st = _LEGACY_BRAIN_ENTRY_STATE.get(yf_symbol.upper(), {})
                                 _st['notional'] = _entry_notional
+                                # Record the actual fill price and size too. The
+                                # settle path needs an entry price to compute
+                                # P&L, and on the playbook route the Chair is
+                                # skipped (_PlaybookSkipChair), so this dict is
+                                # the only entry record that exists. Without it a
+                                # close with no TradeFeatures row had no way to
+                                # work out whether the trade won or lost, and the
+                                # brains learned nothing from it.
+                                _st['entry_price'] = float(filled_price)
+                                _st['qty'] = float(filled_qty)
+                                _st.setdefault('ts', time.time())
                                 _LEGACY_BRAIN_ENTRY_STATE[yf_symbol.upper()] = _st
                             except Exception as _e:
                                 # Was print-only: this failure silently drops the
@@ -22003,17 +22014,55 @@ def _sell_stocks_body(lock):
                                .filter_by(symbols=symbol, exit_date=None)
                                .order_by(TradeFeatures.id.desc())
                                .first())
-                    if feat_row and feat_row.entry_price:
+                    # The brains must learn from EVERY closed trade, win or
+                    # lose. This whole block used to hang off
+                    # `if feat_row and feat_row.entry_price:` — so whenever the
+                    # TradeFeatures row was missing (bot restarted mid-position,
+                    # row never written, entry_price 0) the close was silently
+                    # dropped: no PERSYMBOL.record, no GOVERNOR.on_close, no
+                    # on_trade_settled, no BrainComms debrief, no brain-trust
+                    # settle and no v18 retrain sample. Resolve the entry price
+                    # from any available source instead, and only the
+                    # TradeFeatures bookkeeping stays conditional on the row.
+                    _settle_entry_px = 0.0
+                    for _cand in (
+                        getattr(feat_row, 'entry_price', 0) if feat_row is not None else 0,
+                        _entry_px,
+                        (_LEGACY_BRAIN_ENTRY_STATE.get(symbol.upper(), {}) or {}).get('entry_price', 0),
+                    ):
+                        try:
+                            if _cand and float(_cand) > 0:
+                                _settle_entry_px = float(_cand)
+                                break
+                        except Exception:
+                            continue
+
+                    if feat_row is not None and _settle_entry_px > 0:
                         feat_row.exit_date = today_date_str
                         feat_row.exit_price = price
-                        feat_row.outcome_pct = (price - feat_row.entry_price) / feat_row.entry_price
+                        feat_row.outcome_pct = (price - _settle_entry_px) / _settle_entry_px
+                    elif _settle_entry_px > 0:
+                        logging.warning(
+                            "[settle] %s: no TradeFeatures row to close, but "
+                            "settling the trade anyway so the brains still learn "
+                            "from it (entry %.4f -> exit %.4f)",
+                            symbol, _settle_entry_px, float(price or 0))
 
+                    if _settle_entry_px <= 0:
+                        logging.error(
+                            "[settle] %s: could not resolve an entry price from "
+                            "TradeFeatures, the sell loop, or the brain entry "
+                            "state — this close CANNOT be scored and the brains "
+                            "will not learn from it. Exit price %.4f qty %s.",
+                            symbol, float(price or 0), qty)
+
+                    if _settle_entry_px > 0:
                         # Legacy-ported settlement hooks: record per-symbol
                         # performance, feed the trade governor, and settle
                         # any pending brain-trust predictions for this symbol.
                         try:
-                            pnl_dollar = (price - feat_row.entry_price) * qty
-                            won = feat_row.outcome_pct > 0
+                            pnl_dollar = (price - _settle_entry_px) * qty
+                            won = (price - _settle_entry_px) > 0
                             PERSYMBOL.record(symbol, won, pnl_dollar)
                             GOVERNOR.on_close(won)
 
@@ -22051,8 +22100,17 @@ def _sell_stocks_body(lock):
                                                 f"{'WIN' if won else 'LOSS'} "
                                                 f"${pnl_dollar:+.2f} "
                                                 f"({_real_pct*100:+.2f}%)"))
-                                    except Exception: pass
+                                    except Exception as _ce:
+                                        logging.error(
+                                            "[LEGACY_BRAINS close_position] %s: %s "
+                                            "— per-position debrief (pattern-match "
+                                            "+ look-ahead) did NOT run",
+                                            symbol, _ce, exc_info=True)
                                 except Exception as _e:
+                                    logging.error(
+                                        "[LEGACY_BRAINS settle] %s: %s — brains did "
+                                        "NOT learn from this closed trade",
+                                        symbol, _e, exc_info=True)
                                     print(f"[LEGACY_BRAINS settle] {symbol}: {_e}")
                             # ═══ end LEGACY_BRAINS settle ═══
                             brain_trust_settle_symbol(symbol, won)
