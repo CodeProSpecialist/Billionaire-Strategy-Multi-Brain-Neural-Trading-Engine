@@ -10339,9 +10339,120 @@ def in_trading_universe(yf_symbol):
 # dips (where the edge is best) while filtering out the routine open-drift
 # entries that historically stop out on the reversion at 10:00-10:30.
 from datetime import time as _dt_time  # local alias -- 'time' module is used elsewhere in this file
-EARLY_MORNING_CUTOFF_ET = _dt_time(10, 5)   # 10:05 AM Eastern
+EARLY_MORNING_CUTOFF_ET = _dt_time(10, 30)  # 10:30 AM Eastern
 EARLY_MORNING_MIN_DROP_PCT = 0.02           # 2% below yesterday's close
 EARLY_MORNING_GATE_MODE = 'armed'           # 'armed' | 'shadow' | 'off'
+
+# ---------------- Regime buy-window gate (session-latched) ----------------
+# Entries are allowed only inside a window whose CLOSE depends on the market
+# regime measured once per day, at REGIME_ASSESS_ET. The open of the window is
+# EARLY_MORNING_CUTOFF_ET (10:30 ET) for every regime -- nothing is ever
+# bought before 10:30 ET.
+#
+#   bull      -> buys allowed 10:30 ET .. 12:30 ET
+#   sideways  -> buys allowed 10:30 ET .. 11:00 ET, and ONLY for
+#                upward-momentum dips (the momentum gate runs STRICT:
+#                no shadow pass-through, no fail-open on missing data)
+#   bear      -> no buys at all; "market is not profitable today"
+#   panic     -> no buys at all; "market is not profitable today"
+#   unknown   -> no buys at all (fail closed: if the regime could not be
+#                measured we do not guess)
+#
+# 'sideways' IS the neutral state in this codebase (see REGIME_SIDEWAYS); there
+# is no separate neutral regime.
+#
+# The regime is LATCHED: it is read once, at or after REGIME_ASSESS_ET, and
+# that verdict holds for the rest of the session. It is not re-evaluated every
+# cycle, so the bot cannot flip from "not profitable today" into buying because
+# SPY twitched over its 20-day SMA at 11:15.
+REGIME_ASSESS_ET = _dt_time(10, 30)     # when the daily regime verdict is taken
+
+REGIME_BUY_WINDOW_END_ET = {
+    'bull':     _dt_time(12, 30),       # no buys after 12:30 PM ET
+    'sideways': _dt_time(11, 0),        # no buys after 11:00 AM ET
+    # 'bear', 'panic' and anything unrecognized are absent on purpose ->
+    # a missing key means NO BUYS AT ALL for that regime.
+}
+
+REGIME_NOT_PROFITABLE_MSG = "market is not profitable today"
+
+# {'YYYY-MM-DD': regime_string} -- the latched verdict for the session.
+_regime_latch = {}
+_regime_latch_lock = threading.Lock()
+
+
+def get_latched_session_regime():
+    """Return the regime latched for today, or None if it is not yet
+    REGIME_ASSESS_ET (10:30 ET).
+
+    The first call at or after 10:30 ET reads get_market_regime() and freezes
+    the answer for the rest of the calendar day. Every later call that day
+    returns that same frozen value without re-measuring.
+    """
+    now_et = datetime.now(eastern)
+    today = now_et.date().isoformat()
+
+    with _regime_latch_lock:
+        if today in _regime_latch:
+            return _regime_latch[today]
+
+        if now_et.time() < REGIME_ASSESS_ET:
+            return None      # too early -- nothing to latch yet
+
+        try:
+            regime = (get_market_regime() or {}).get('regime') or 'unknown'
+        except Exception as e:
+            logging.error("regime latch: get_market_regime() failed (%s) -- "
+                          "latching 'unknown' (no buys today)", e, exc_info=True)
+            regime = 'unknown'
+
+        regime = str(regime).lower()
+        _regime_latch[today] = regime
+        # Keep the latch from growing without bound across a long-lived run.
+        for stale in [d for d in _regime_latch if d != today]:
+            del _regime_latch[stale]
+
+        logging.info("Regime latched for %s at %s ET: %s",
+                     today, now_et.strftime('%H:%M:%S'), regime.upper())
+        print("  [regime latch] %s ET -> market regime for today is %s"
+              % (now_et.strftime('%H:%M'), regime.upper()))
+        return regime
+
+
+def check_regime_buy_window(now_et=None):
+    """(allow: bool, reason: str) for the session-latched regime buy window.
+
+    This gate governs NEW ENTRIES ONLY. Sells, stops, scale-outs and the
+    end-of-day sweep are untouched by it -- an open position must always be
+    able to exit regardless of the time or the regime.
+    """
+    now_et = now_et or datetime.now(eastern)
+    t = now_et.time()
+
+    if t < EARLY_MORNING_CUTOFF_ET:
+        return False, ("%s ET is before the %s ET open of the buy window"
+                       % (t.strftime('%H:%M'),
+                          EARLY_MORNING_CUTOFF_ET.strftime('%H:%M')))
+
+    regime = get_latched_session_regime()
+    if regime is None:
+        return False, ("regime not yet assessed (assessment runs at %s ET)"
+                       % REGIME_ASSESS_ET.strftime('%H:%M'))
+
+    window_end = REGIME_BUY_WINDOW_END_ET.get(regime)
+    if window_end is None:
+        return False, ("%s — regime is %s"
+                       % (REGIME_NOT_PROFITABLE_MSG, regime.upper()))
+
+    if t >= window_end:
+        return False, ("%s regime buy window closed at %s ET (now %s ET)"
+                       % (regime.upper(), window_end.strftime('%H:%M'),
+                          t.strftime('%H:%M')))
+
+    return True, ("%s regime — buy window open %s-%s ET"
+                  % (regime.upper(),
+                     EARLY_MORNING_CUTOFF_ET.strftime('%H:%M'),
+                     window_end.strftime('%H:%M')))
 
 # ---------------- ML brain (optional buy-score adjustment) ----------------
 # Adds a small +/- adjustment to the buy score from the inlined ML brain
@@ -11956,8 +12067,14 @@ def ce_macd_buy_bump(symbol):
         return 0.0, ''
 
 
-def check_bullish_momentum_gate(symbol, df=None):
+def check_bullish_momentum_gate(symbol, df=None, strict=False):
     """(allow, reason) -- requires near-term bullish momentum.
+
+    strict=True is used on SIDEWAYS days, where the operator rule is that
+    the ONLY thing we may buy is an upward-momentum dip. In strict mode
+    this gate does not fail open and does not honour shadow/off mode:
+    missing or unreadable 1m data is a DENY, because 'we could not tell
+    whether momentum was up' is not 'momentum was up'.
 
     The 20-day half of the operator's rule is enforced upstream by the +5%
     MIN_20D_MOMENTUM_PCT filter in the ranking phase, so this gate covers the
@@ -11968,7 +12085,7 @@ def check_bullish_momentum_gate(symbol, df=None):
     Fail-OPEN on missing data (a yfinance gap must not silently halt all
     trading); fail-CLOSED only on a clean read that shows momentum is absent.
     """
-    if MOMENTUM_GATE_MODE == 'off':
+    if MOMENTUM_GATE_MODE == 'off' and not strict:
         return True, 'momentum gate disabled'
     fails, notes = [], []
 
@@ -11977,7 +12094,10 @@ def check_bullish_momentum_gate(symbol, df=None):
         r = get_ce_macd_signal(symbol)
         m = (r or {}).get('momentum_short') or {}
         if not (r or {}).get('ok') or not m.get('ok'):
-            notes.append('near-term: no 1m data (fail-open)')
+            if strict:
+                fails.append('near-term: no 1m data (strict -> deny)')
+            else:
+                notes.append('near-term: no 1m data (fail-open)')
         else:
             ret = m.get('ret')
             if ret is None or ret <= float(MOM_SHORT_MIN_RETURN):
@@ -11991,7 +12111,10 @@ def check_bullish_momentum_gate(symbol, df=None):
             if MOM_SHORT_REQUIRE_HIST_UP and m.get('hist_rising') is False:
                 fails.append('MACD histogram not rising bar-over-bar')
     except Exception as e:
-        notes.append(f'near-term error (fail-open): {e}')
+        if strict:
+            fails.append(f'near-term error (strict -> deny): {e}')
+        else:
+            notes.append(f'near-term error (fail-open): {e}')
 
     # The 20-day leg is NOT repeated here. USE_20D_MOMENTUM_FILTER /
     # MIN_20D_MOMENTUM_PCT in the ranking phase already requires a 20-session
@@ -12000,8 +12123,10 @@ def check_bullish_momentum_gate(symbol, df=None):
     if not fails:
         return True, 'bullish momentum: ' + (', '.join(notes) if notes else 'ok')
     reason = '; '.join(fails)
-    if MOMENTUM_GATE_MODE == 'shadow':
+    if MOMENTUM_GATE_MODE == 'shadow' and not strict:
         return True, f'[SHADOW would-deny] {reason}'
+    if strict:
+        return False, f'[sideways strict] {reason}'
     return False, reason
 
 
@@ -19318,11 +19443,25 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
 
     _now_et = datetime.now(eastern).time()
     if _now_et < EARLY_MORNING_CUTOFF_ET:
-        print(f"  [10:05 ET gate] current {_now_et.strftime('%H:%M:%S')} ET < "
+        print(f"  [10:30 ET gate] current {_now_et.strftime('%H:%M:%S')} ET < "
               f"{EARLY_MORNING_CUTOFF_ET.strftime('%H:%M')} ET — no buy orders "
-              f"before 10:05 AM Eastern. Skipping cycle "
+              f"before 10:30 AM Eastern. Skipping cycle "
               f"(brains still observed the market).")
         return
+
+    # ---------------- Regime buy-window gate ----------------
+    # Latched once at 10:30 ET: bull buys until 12:30 ET, sideways until
+    # 11:00 ET, bear/panic/unknown not at all. Entries only -- exits are never
+    # gated by this. Runs after the observe/feed call above so the brains keep
+    # learning on days we never place a buy.
+    _rg_allow, _rg_reason = check_regime_buy_window()
+    if not _rg_allow:
+        print(f"  [regime window] {_rg_reason}. No new entries. Skipping buy "
+              f"cycle (brains still observed the market).")
+        logging.info("Buy cycle skipped — regime window: %s "
+                     "(observation still ran)", _rg_reason)
+        return
+    print(f"  [regime window] {_rg_reason}")
 
     # ---------------- Weekday bias (cycle-level) ----------------
     # Historically bearish weekdays get no new entries at all. Checked once
@@ -19963,7 +20102,11 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
             # Operator rule: no entry without BOTH current bullish momentum
             # and bullish momentum over the past 20 days. Reuses the cached
             # 1m payload and the daily `df` already in hand -- no extra HTTP.
-            mom_allow, mom_reason = check_bullish_momentum_gate(yf_symbol, df)
+            # On a SIDEWAYS day the only permitted entry is an upward-
+            # momentum dip, so the gate runs strict (see its docstring).
+            _mom_strict = (get_latched_session_regime() == REGIME_SIDEWAYS)
+            mom_allow, mom_reason = check_bullish_momentum_gate(
+                yf_symbol, df, strict=_mom_strict)
             if not mom_allow:
                 print(f"{yf_symbol}: {DIM}momentum gate:{RESET} {mom_reason}. Skipping.")
                 logging.info(f"{now_str} Skipped {yf_symbol}: momentum gate — {mom_reason}")
