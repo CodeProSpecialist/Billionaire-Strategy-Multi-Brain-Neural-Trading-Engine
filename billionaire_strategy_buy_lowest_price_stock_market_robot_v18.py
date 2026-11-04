@@ -10299,6 +10299,12 @@ ONE_PER_DAY_MAX         = 1         # positions per trading day WHEN armed
 # ends the cycle), so in practice this ceiling governs sideways days.
 DAILY_MAX_POSITIONS_NON_BULL = 8
 
+# How far the newest portfolio-history equity mark may differ from live
+# account equity before we stop believing the history series. Some accounts
+# return marks that track buying power rather than account value, which made
+# a fully-deployed account look like a ~96% one-day loss.
+PORTFOLIO_MARK_TOLERANCE = 0.25      # 25%
+
 # The composite ranker is INDEPENDENT of the daily cap -- which candidate
 # ranks highest still matters when several are bought in a cycle.
 COMPOSITE_RANK_MODE     = 'armed'   # 'armed' | 'off'
@@ -23413,6 +23419,38 @@ def print_portfolio_gain_summary(force=False):
 
     latest_date, latest_equity = ordered[-1]
 
+    # ---------------- Sanity-check the history against live equity ---------
+    # BUGFIX: this block printed the last portfolio-history mark as "Current
+    # equity" and computed window percentages from it. On at least some
+    # accounts those marks track BUYING POWER rather than account value, so
+    # with most of the account deployed in positions the series read like
+    # 208.70 -> 8.68 and the block reported a 95.84% one-day loss that never
+    # happened. Money moving into a position is not money lost.
+    #
+    # We therefore fetch the live account equity and compare. If the newest
+    # mark disagrees with live equity by more than PORTFOLIO_MARK_TOLERANCE,
+    # the series is not measuring account value, and every percentage derived
+    # from it would be fiction -- so we print live equity and suppress the
+    # windows rather than print a number we cannot stand behind.
+    live_equity = None
+    try:
+        live_equity = float(api.get_account().equity)
+    except Exception as e:
+        logging.warning("[portfolio] could not read live equity (%s); "
+                        "falling back to the history mark.", e)
+
+    marks_look_wrong = False
+    if live_equity is not None and live_equity > 0:
+        denom = max(abs(live_equity), 1e-9)
+        if abs(latest_equity - live_equity) / denom > PORTFOLIO_MARK_TOLERANCE:
+            marks_look_wrong = True
+            logging.warning(
+                "[portfolio] newest history mark $%.2f disagrees with live "
+                "equity $%.2f by more than %.0f%%. The series is probably "
+                "tracking buying power, not account value; suppressing the "
+                "gain/loss windows.", latest_equity, live_equity,
+                PORTFOLIO_MARK_TOLERANCE * 100)
+
     # Uses module-level GREEN / RED / DIM / RESET / pnl_color helpers.
     # Set env var _NO_COLOR=1 to disable coloring globally.
 
@@ -23441,7 +23479,9 @@ def print_portfolio_gain_summary(force=False):
     lines = [
         "",
         "=========================== Portfolio Gain / Loss ===========================",
-        f"  Current equity: ${latest_equity:,.2f}  (as of trading session {latest_date})",
+        (f"  Current equity: ${live_equity:,.2f}  {DIM}(live){RESET}"
+         if live_equity is not None else
+         f"  Equity at last close: ${latest_equity:,.2f}  (session {latest_date})"),
         # "Past 24 hours" = previous trading session (1 session back).
         # "Past 7 days"   = 5 trading sessions back (a full trading week).
         # "Past 14 days"  = 10 trading sessions back (two full trading weeks).
@@ -23449,10 +23489,14 @@ def print_portfolio_gain_summary(force=False):
         # Trading sessions (not calendar days) because holidays and
         # weekends have no equity marks -- "1 calendar day ago" on a
         # Monday would land on Sunday and have no data.
-        window_result(1,  "24 hours"),
-        window_result(5,  "7 days"),
-        window_result(10, "14 days"),
-        window_result(21, "30 days"),
+        *([f"  {DIM}Gain/loss windows suppressed: the broker's history marks "
+           f"(newest ${latest_equity:,.2f} on {latest_date}) do not match live "
+           f"equity, so they are not measuring account value.{RESET}"]
+          if marks_look_wrong else
+          [window_result(1,  "24 hours"),
+           window_result(5,  "7 days"),
+           window_result(10, "14 days"),
+           window_result(21, "30 days")]),
         f"  {DIM}Fetched at: {fetched_at_et}  (refetches at most 1/hour){RESET}",
         "============================================================================",
         "",
