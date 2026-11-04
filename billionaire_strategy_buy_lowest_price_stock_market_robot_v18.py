@@ -10251,19 +10251,23 @@ KELLY_SCALE = 1.0 / 3.0          # fraction of classic Kelly actually used
 # Never commit the whole cash balance to a single order. Applies to BOTH the
 # Kelly path and the ATR-risk fallback, since it is enforced through the
 # headroom cap rather than inside the sizing formula.
-# Operator rule: do not put all the eggs in one basket. A single order may
-# use at most this fraction of available cash, so the cash can always fund
-# DAILY_MAX_POSITIONS_NON_BULL separate names, ranked most-profit-probable
-# first by the existing rank_score. Applies in EVERY regime --
-# bull days use the same position sizing -- and binds on both the Kelly path
-# and the ATR-risk fallback, because it is enforced through the headroom cap
-# rather than inside either sizing formula.
-MAX_CASH_FRACTION_PER_ORDER = 1.0 / 20.0
-# Operator rule: place all 20 buy orders SIMULTANEOUSLY during the buying
+# Operator rule: do not put all the eggs in one basket. Cash is divided
+# EQUALLY between the candidates actually being bought this pass, so 25
+# candidates get a 25th each and 10 candidates get a 10th each -- the money
+# is not left idle just because fewer names qualified. That divisor is
+# computed at execution time from len(to_buy); this constant is only the
+# fallback used if that count is somehow unavailable.
+#
+# Applies in EVERY regime -- bull days use the same position sizing -- and
+# binds on both the Kelly path and the ATR-risk fallback, because it is
+# enforced through the headroom cap rather than inside either sizing
+# formula.
+MAX_CASH_FRACTION_PER_ORDER = 1.0 / 25.0
+# Operator rule: place up to 25 buy orders SIMULTANEOUSLY during the buying
 # window rather than dribbling them out over successive cycles. This must
 # be >= DAILY_MAX_POSITIONS_NON_BULL or the day's allowance cannot be
 # filled in a single pass.
-MAX_NEW_POSITIONS_PER_CYCLE = 20  # rank all qualifying candidates, only buy the top N (review item #9)
+MAX_NEW_POSITIONS_PER_CYCLE = 25  # rank all qualifying candidates, only buy the top N (review item #9)
 
 # ---------------- One-position-per-trading-day mode -------------------------
 # Operator spec: buy exactly ONE position per trading day -- the best-ranked
@@ -10294,11 +10298,11 @@ ONE_PER_DAY_MAX         = 1         # positions per trading day WHEN armed
                                     # (the configured value; the regime-driven
                                     #  ceiling below overrides it when armed)
 
-# Operator rule: on sideways/neutral days we may hold up to TWENTY positions,
+# Operator rule: on sideways/neutral days we may hold up to 25 positions,
 # with cash split equally between them, rather than concentrating the day in
 # a single name. bear/panic never place a buy at all (check_regime_buy_window
 # ends the cycle), so in practice this ceiling governs sideways days.
-DAILY_MAX_POSITIONS_NON_BULL = 20
+DAILY_MAX_POSITIONS_NON_BULL = 25
 
 # The composite ranker is INDEPENDENT of the daily cap -- which candidate
 # ranks highest still matters when several are bought in a cycle.
@@ -10408,7 +10412,7 @@ def one_per_day_max_positions():
     """How many positions may be opened today, under the effective mode.
 
     Operator rule: a sideways/neutral day allows up to
-    DAILY_MAX_POSITIONS_NON_BULL (20) positions with cash split equally
+    DAILY_MAX_POSITIONS_NON_BULL (25) positions with cash split equally
     between them -- not all the eggs in one basket, but still a hard daily
     ceiling. Bull days are uncapped (one_per_day_effective_mode returns
     'off', so this is never consulted).
@@ -10489,7 +10493,7 @@ EARLY_MORNING_GATE_MODE = 'armed'           # 'armed' | 'shadow' | 'off'
 #   sideways  -> buys allowed 10:30 ET .. 11:15 ET, ONLY upward-momentum
 #                dips (the momentum gate runs STRICT: no shadow pass-
 #                through, no fail-open on missing data), and AT MOST ONE
-#                at most DAILY_MAX_POSITIONS_NON_BULL (20) positions for
+#                at most DAILY_MAX_POSITIONS_NON_BULL (25) positions for
 #                the day, with cash split equally between them (see
 #                one_per_day_effective_mode / MAX_CASH_FRACTION_PER_ORDER)
 #   bear      -> no buys at all; "market is not profitable today"
@@ -10603,7 +10607,9 @@ def check_regime_buy_window(now_et=None):
 USE_ML_BRAIN_ADJUSTMENT = True
 ML_BRAIN_RETRAIN_EVERY_N_CYCLES = 120   # live-trade fine-tune cadence -- ~2 hours at 60s/cycle, cheap-gated internally too
 MIN_ORDER_NOTIONAL = 1.00
-CASH_BUFFER = 1.00
+# Operator rule: always leave $5 of cash unspent. Subtracted before the
+# equal split, so the reserve is never divided into the orders.
+CASH_BUFFER = 5.00
 MAINTENANCE_MARGIN_FLOOR_PCT = 0.30  # abort new buys if equity/market_value dips below
 
 # ---------------- Hard stop-loss (review items #6/#7) ----------------
@@ -20523,6 +20529,29 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
                   f"rank {c['rank_score']:.1f}")
 
     # ---------------- Phase 2: execute buys for the ranked shortlist ----------------
+    # Operator rule: divide cash EQUALLY between the orders in this pass.
+    #
+    # The snapshot matters. cash_available is re-read inside the loop and
+    # falls as each order fills, so dividing the CURRENT cash by the count on
+    # every iteration would shrink each successive order -- the first
+    # candidate would get a 25th of the full balance, the last a 25th of
+    # what little remained. Taking the divisor and the balance ONCE, before
+    # any order goes out, gives every candidate the same share.
+    _equal_share = None
+    if to_buy:
+        try:
+            with lock:
+                _cash_at_pass_start = float(api.get_account().cash)
+            _equal_share = max(0.0, (_cash_at_pass_start - CASH_BUFFER)
+                               / float(len(to_buy)))
+            print(f"  [equal split] ${_cash_at_pass_start:,.2f} cash across "
+                  f"{len(to_buy)} candidate(s) -> ${_equal_share:,.2f} each.")
+        except Exception as _es:
+            logging.warning("[equal split] could not read cash for the equal "
+                            "split (%s); falling back to "
+                            "MAX_CASH_FRACTION_PER_ORDER.", _es)
+            _equal_share = None
+
     for c in to_buy:
         symbol, yf_symbol, api_symbol = c['symbol'], c['yf_symbol'], c['api_symbol']
         current_price, sig = c['current_price'], c['sig']
@@ -20602,11 +20631,16 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
                 with lock:
                     cash_available = float(api.get_account().cash)
                 # Operator rule: never spend the entire cash balance on one
-                # order. MAX_CASH_FRACTION_PER_ORDER caps a single entry at a
-                # fraction of available cash, in BOTH cash and margin mode --
-                # in margin mode cash was previously not a limit here at all.
-                _cash_cap = max(0.0, (cash_available - CASH_BUFFER)
-                                * MAX_CASH_FRACTION_PER_ORDER)
+                # order. Each order gets an equal share of the cash this pass
+                # started with (see _equal_share above), in BOTH cash and
+                # margin mode -- in margin mode cash was previously not a
+                # limit here at all. Falls back to a flat fraction of current
+                # cash if the snapshot could not be taken.
+                if _equal_share is not None:
+                    _cash_cap = _equal_share
+                else:
+                    _cash_cap = max(0.0, (cash_available - CASH_BUFFER)
+                                    * MAX_CASH_FRACTION_PER_ORDER)
                 headroom = min(
                     MAX_ALLOCATION_PER_SYMBOL,
                     max_new_exposure,
