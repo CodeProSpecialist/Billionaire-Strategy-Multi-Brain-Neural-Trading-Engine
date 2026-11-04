@@ -87,6 +87,7 @@ from datetime import datetime, timedelta, date, timezone
 from datetime import time as time2
 import alpaca_trade_api as tradeapi
 import pytz
+from decimal import Decimal, ROUND_DOWN, InvalidOperation
 import math
 import numpy as np
 from collections import deque, defaultdict
@@ -13709,6 +13710,33 @@ def _cancel_existing_sell_orders(symbol, sweep_label, now_str):
     return cancelled
 
 
+def _floor_qty(q, places=6):
+    """Round a share quantity DOWN to `places` decimals.
+
+    BUGFIX: sell paths used round(qty, 6), which rounds half-UP. A fractional
+    position of 1.311975657 shares became a request for 1.311976 shares --
+    more than exists -- and Alpaca rejected every step of the escalation
+    chain with "insufficient qty available for order". The position could
+    then never be sold: the 3:45 sweep failed, FINAL FLATTEN failed, and the
+    position was carried overnight in defiance of the flatten rule.
+
+    Rounding DOWN can only ever leave a sub-microshare dust remainder, which
+    the existing dust-sweep logic already handles. Rounding up is unfillable.
+    """
+    try:
+        d = Decimal(str(float(q))).quantize(Decimal(1).scaleb(-int(places)),
+                                            rounding=ROUND_DOWN)
+        return float(d)
+    except (InvalidOperation, ValueError, TypeError):
+        # Never let a formatting helper take the sell path down; fall back to
+        # a plain truncation.
+        try:
+            f = 10 ** int(places)
+            return int(float(q) * f) / float(f)
+        except Exception:
+            return 0.0
+
+
 def _sell_with_escalation(symbol, qty, last_known_price, step1_type, step1_tif,
                           sweep_label, now_str):
     """
@@ -13720,7 +13748,7 @@ def _sell_with_escalation(symbol, qty, last_known_price, step1_type, step1_tif,
     Each step only tries to sell whatever quantity is STILL unfilled from the
     previous step, so a partial fill at any stage is never double-sold.
     """
-    remaining_qty = qty
+    remaining_qty = _floor_qty(qty)
     total_filled_qty = 0.0
     total_notional = 0.0
     steps_used = []
@@ -13769,7 +13797,7 @@ def _sell_with_escalation(symbol, qty, last_known_price, step1_type, step1_tif,
                   f"for {remaining_qty:.4f} sh (order {getattr(order, 'id', 'n/a')}).")
             terminal, fq, fp, status = _poll_order_terminal(order.id, ESCALATION_STEP1_TIMEOUT_SECS)
             _log_fill('step1', fq, fp)
-            remaining_qty = round(remaining_qty - fq, 6)
+            remaining_qty = _floor_qty(remaining_qty - fq)
             if not terminal:
                 print(f"{symbol}: [{sweep_label}] step 1 order not terminal after "
                       f"{ESCALATION_STEP1_TIMEOUT_SECS}s (status={status}); cancelling and escalating.")
@@ -13781,7 +13809,7 @@ def _sell_with_escalation(symbol, qty, last_known_price, step1_type, step1_tif,
                     extra_fq = max(0.0, float(o.filled_qty or 0) - fq)
                     if extra_fq > 0:
                         _log_fill('step1_late', extra_fq, float(o.filled_avg_price) if o.filled_avg_price else fp)
-                        remaining_qty = round(remaining_qty - extra_fq, 6)
+                        remaining_qty = _floor_qty(remaining_qty - extra_fq)
                 except Exception as e:
                     logging.warning(f"{symbol}: [{sweep_label}] step 1 cancel/recheck failed: {e}")
             elif status in ('canceled', 'expired', 'rejected') and fq == 0:
@@ -13805,7 +13833,7 @@ def _sell_with_escalation(symbol, qty, last_known_price, step1_type, step1_tif,
               f"for {remaining_qty:.4f} sh (order {getattr(order2, 'id', 'n/a')}).")
         terminal2, fq2, fp2, status2 = _poll_order_terminal(order2.id, ESCALATION_STEP2_TIMEOUT_SECS)
         _log_fill('step2', fq2, fp2)
-        remaining_qty = round(remaining_qty - fq2, 6)
+        remaining_qty = _floor_qty(remaining_qty - fq2)
         if not terminal2:
             print(f"{symbol}: [{sweep_label}] step 2 limit not terminal after "
                   f"{ESCALATION_STEP2_TIMEOUT_SECS}s (status={status2}); cancelling and escalating to market.")
@@ -13816,7 +13844,7 @@ def _sell_with_escalation(symbol, qty, last_known_price, step1_type, step1_tif,
                 extra_fq2 = max(0.0, float(o2.filled_qty or 0) - fq2)
                 if extra_fq2 > 0:
                     _log_fill('step2_late', extra_fq2, float(o2.filled_avg_price) if o2.filled_avg_price else fp2)
-                    remaining_qty = round(remaining_qty - extra_fq2, 6)
+                    remaining_qty = _floor_qty(remaining_qty - extra_fq2)
             except Exception as e:
                 logging.warning(f"{symbol}: [{sweep_label}] step 2 cancel/recheck failed: {e}")
         elif status2 in ('canceled', 'expired', 'rejected') and fq2 == 0:
@@ -13838,7 +13866,7 @@ def _sell_with_escalation(symbol, qty, last_known_price, step1_type, step1_tif,
               f"{remaining_qty:.4f} sh (order {getattr(order3, 'id', 'n/a')}).")
         terminal3, fq3, fp3, status3 = _poll_order_terminal(order3.id, ESCALATION_STEP2_TIMEOUT_SECS)
         _log_fill('step3', fq3, fp3)
-        remaining_qty = round(remaining_qty - fq3, 6)
+        remaining_qty = _floor_qty(remaining_qty - fq3)
         if remaining_qty > 0:
             # Still not fully sold -- most likely a trading halt or a broker/
             # network problem. Nothing further to escalate to; log loudly so
@@ -14230,7 +14258,7 @@ def _run_profit_sweep(sweep_label, step1_type, step1_tif, sell_all=False):
             # first, so the sweep owns and can sell the FULL qty rather than
             # only whatever fraction wasn't already tied up in an older order.
             _cancel_existing_sell_orders(symbol, sweep_label, now_str)
-            sweep_qty = round(qty, 6)
+            sweep_qty = _floor_qty(qty)
             if sweep_qty <= 0:
                 skipped.append((symbol, "zero qty after cancelling pre-existing orders"))
                 continue
@@ -14326,7 +14354,7 @@ def _run_portfolio_liquidation_phase(sweep_label, step1_type, step1_tif,
         try:
             liq_label = f"{sweep_label} portfolio-liq"
             _cancel_existing_sell_orders(symbol, liq_label, now_str)
-            sell_qty = round(qty, 6)
+            sell_qty = _floor_qty(qty)
             if sell_qty <= 0:
                 liq_skipped.append((symbol, "zero qty after cancelling pre-existing orders"))
                 continue
@@ -14478,7 +14506,7 @@ def run_final_flatten():
                     px = get_current_price(to_yf(sym))
                 _cancel_existing_sell_orders(sym, "FINAL FLATTEN", now_str)
                 filled_qty, notional, steps = _sell_with_escalation(
-                    sym, round(qty, 6), px, 'market', 'day', "FINAL FLATTEN", now_str)
+                    sym, _floor_qty(qty), px, 'market', 'day', "FINAL FLATTEN", now_str)
                 if filled_qty > 0:
                     logging.warning(f"{now_str} FINAL FLATTEN sold {sym}: "
                                     f"{filled_qty:.4f} sh @ avg "
