@@ -10371,6 +10371,11 @@ _NASDAQ_TECH_UNIVERSE = [
     # list -- it was built from semiconductor and enterprise-software names, so
     # the biggest and most liquid Nasdaq technology companies were absent.
     'META','AMZN','GOOGL','GOOG','NFLX','TSLA',
+    # Top computer / electronics brands. All NASDAQ-listed and above the
+    # UNIVERSE_MIN_MARKET_CAP floor. Deliberately excluded because they are
+    # NYSE-listed, not Nasdaq: DELL, HPQ, HPE, IBM, ANET, PSTG, SONY, MSI,
+    # KEYS, JBL. Adding those would break the Nasdaq-only rule.
+    'INTC','LOGI','GRMN','FLEX','CDW','SNDK','SANM','PLXS','ROKU',
     'AAPL','NVDA','MSFT','AVGO','MU','AMD','ASML','CSCO','AMAT','PANW','LRCX',
     'TXN','CRWD','ARM','KLAC','ADI','MRVL','QCOM','STX','WDC','FTNT','ADBE',
     'INTU','CDNS','SNPS','DDOG','NXPI','MPWR','ADSK','TER','MCHP','PAYX',
@@ -11317,10 +11322,35 @@ NDX_TOP_N = 25                # how many of the ranked universe may be bought
 NDX_PERMANENT_EXCLUSIONS = {'MRNA'}
 
 
+# Which list the playbook's 'ndx' universe key resolves to.
+#   'tech' -> _NASDAQ_TECH_UNIVERSE: profitable Nasdaq technology, mid cap and
+#             up (61 names). This is the operator's chosen universe.
+#   'ndx100' -> PLAYBOOK_UNIVERSE_NDX: the full Nasdaq-100 (101 names).
+#
+# IMPORTANT, and the reason this is a switch rather than an edit: the
+# playbook's published backtest numbers (+0.11%/trade over the full year)
+# were measured on the NASDAQ-100 list. Running 'tech' means the strategy is
+# trading a universe it was never backtested on, so those numbers no longer
+# describe what is live. Set this to 'ndx100' to get back to the configuration
+# the backtest actually covers.
+PLAYBOOK_NDX_UNIVERSE_SOURCE = 'tech'    # 'tech' | 'ndx100'
+
+
 def _ndx_tradable_universe():
     """The playbook's Nasdaq universe with permanently excluded names removed."""
-    return [s for s in PLAYBOOK_UNIVERSE_NDX
-            if s.upper() not in NDX_PERMANENT_EXCLUSIONS]
+    base = (_NASDAQ_TECH_UNIVERSE if PLAYBOOK_NDX_UNIVERSE_SOURCE == 'tech'
+            else PLAYBOOK_UNIVERSE_NDX)
+    # Deduplicate while preserving order -- the tech list is hand-maintained
+    # and a repeated name would otherwise occupy two of the 25 shortlist slots.
+    seen = set()
+    out = []
+    for s in base:
+        u = s.upper()
+        if u in NDX_PERMANENT_EXCLUSIONS or u in seen:
+            continue
+        seen.add(u)
+        out.append(s)
+    return out
 
 
 def ndx_scan_universe(now_et=None):
