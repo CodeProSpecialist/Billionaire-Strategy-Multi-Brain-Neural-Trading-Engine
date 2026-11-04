@@ -104,6 +104,43 @@ import json     # needed by trade intelligence
 import pickle   # needed by trade intelligence
 
 # =================================================================================
+# ---------------- NEW YORK (MARKET) TIME -- SINGLE SOURCE OF TRUTH ----------------
+# =================================================================================
+# Every wall-clock decision this robot makes is a MARKET decision, so every
+# wall clock in this file is New York time -- never the host machine's local
+# timezone. The host may sit in Central (or anywhere else); US/Eastern follows
+# the NYSE session and handles DST automatically.
+#
+# The only two exceptions, both deliberate and left alone:
+#   1. UTC is used where an exchange/vendor API demands UTC (Alpaca bar
+#      windows, news `until` cursors) -- those convert ET -> UTC explicitly.
+#   2. time.time() / epoch seconds, which carry no timezone at all. Epochs are
+#      rendered into New York time at the point of display.
+_EASTERN_TZ = pytz.timezone('US/Eastern')
+
+
+def _et_now():
+    """Current New York (market) time, timezone-aware."""
+    return datetime.now(_EASTERN_TZ)
+
+
+def _et_naive():
+    """Current New York wall-clock time as a NAIVE datetime.
+
+    Used where the value is stored as a string in SQLite, or subtracted from
+    another naive datetime. Returning naive-ET (rather than aware-ET) keeps
+    string ordering stable across DST and avoids aware/naive TypeErrors when
+    mixed with existing naive arithmetic.
+    """
+    return datetime.now(_EASTERN_TZ).replace(tzinfo=None)
+
+
+def _et_from_epoch(ts):
+    """Convert an epoch-seconds timestamp into aware New York time."""
+    return datetime.fromtimestamp(float(ts), tz=pytz.UTC).astimezone(_EASTERN_TZ)
+
+
+# =================================================================================
 # ---------------- TRADE INTELLIGENCE (inlined) ------------------------------------
 # =================================================================================
 # Persistent per-trade logger + XGBoost win-probability scorer + adaptive per-symbol
@@ -2798,7 +2835,7 @@ _INTEL_FEATURE_COLUMNS = [
 
 
 def _intel_log(msg):
-    line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [intel] {msg}"
+    line = f"[{_et_naive().strftime('%Y-%m-%d %H:%M:%S')}] [intel] {msg}"
     print(line)
     try:
         with open(_INTEL_LOG, "a") as f: f.write(line + "\n")
@@ -2875,7 +2912,7 @@ class _TradeIntelligence:
     @staticmethod
     def snapshot_features(**kwargs):
         feat = {}
-        now = datetime.now()
+        now = _et_naive()
         feat.setdefault("day_of_week", now.weekday())
         feat.setdefault("hour_of_day", now.hour)
         market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
@@ -2904,7 +2941,7 @@ class _TradeIntelligence:
                     (symbol, setup, entry_time, entry_price, features_json,
                      predicted_prob, size_multiplier)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (symbol, setup, datetime.now().isoformat(),
+            """, (symbol, setup, _et_naive().isoformat(),
                   float(entry_price), json.dumps(features),
                   predicted_prob, size_multiplier))
             return cur.lastrowid
@@ -2919,7 +2956,7 @@ class _TradeIntelligence:
                     exit_time=?, exit_price=?, exit_reason=?,
                     realized_pct=?, bars_held=?, is_win=?
                 WHERE id=?
-            """, (datetime.now().isoformat(), float(exit_price),
+            """, (_et_naive().isoformat(), float(exit_price),
                   exit_reason, float(realized_pct), bars_held, is_win, trade_id))
         self._size_cache.clear()
 
@@ -2936,7 +2973,7 @@ class _TradeIntelligence:
 
     def _save_model(self, n_trades):
         bundle = {"model": self._model, "features": self._model_feature_names,
-                  "n_trades": n_trades, "saved_at": datetime.now().isoformat()}
+                  "n_trades": n_trades, "saved_at": _et_naive().isoformat()}
         with open(self.model_path, "wb") as f:
             pickle.dump(bundle, f)
 
@@ -3007,7 +3044,7 @@ class _TradeIntelligence:
         cached = self._size_cache.get(key)
         if cached and cached[1] > now:
             return cached[0]
-        cutoff = (datetime.now() - timedelta(days=self.lookback_days)).isoformat()
+        cutoff = (_et_naive() - timedelta(days=self.lookback_days)).isoformat()
         with self._connect() as c:
             sym_rows = c.execute("""
                 SELECT realized_pct FROM trades
@@ -3034,7 +3071,7 @@ class _TradeIntelligence:
         return mult
 
     def stats(self, days=30):
-        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        cutoff = (_et_naive() - timedelta(days=days)).isoformat()
         with self._connect() as c:
             total = c.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
             completed = c.execute("SELECT COUNT(*) FROM trades WHERE is_win IS NOT NULL").fetchone()[0]
@@ -3063,7 +3100,7 @@ class _TradeIntelligence:
     def dashboard_snapshot(self):
         """Everything the dashboard card needs in one call."""
         s = self.stats(days=30)
-        cutoff90 = (datetime.now() - timedelta(days=90)).isoformat()
+        cutoff90 = (_et_naive() - timedelta(days=90)).isoformat()
         with self._connect() as c:
             top_syms = c.execute("""
                 SELECT symbol, COUNT(*), AVG(is_win), SUM(realized_pct)
@@ -3138,7 +3175,7 @@ os.makedirs(_BRAIN_DIR, exist_ok=True)
 
 
 def _brain_log(who, msg):
-    line = f"[{datetime.now().strftime('%H:%M:%S')}] [{who}] {msg}"
+    line = f"[{_et_naive().strftime('%H:%M:%S')}] [{who}] {msg}"
     print(line)
     try:
         TRADING_FLOOR.emit(who, msg)
@@ -3150,7 +3187,7 @@ def _brain_log(who, msg):
 class _BrainCommsMessage:
     __slots__ = ("ts", "sender", "kind", "payload")
     def __init__(self, sender, kind, payload):
-        self.ts = datetime.now()
+        self.ts = _et_naive()
         self.sender = sender
         self.kind = kind
         self.payload = payload
@@ -3209,13 +3246,13 @@ class _BrainComms:
     def vote(self, sender, symbol, verdict, weight=1.0):
         """A brain records its opinion on a symbol. verdict in [-1,+1]."""
         with self._lock:
-            self._votes[symbol][sender] = (float(verdict), float(weight), datetime.now())
+            self._votes[symbol][sender] = (float(verdict), float(weight), _et_naive())
         self.post(sender, "vote", {"symbol": symbol, "verdict": verdict, "weight": weight})
 
     def consensus(self, symbol, window_secs=60.0):
         """Weighted average of recent votes on a symbol.
         Returns (score in [-1,+1], voter_count, sender_list)."""
-        cutoff = datetime.now() - timedelta(seconds=window_secs)
+        cutoff = _et_naive() - timedelta(seconds=window_secs)
         with self._lock:
             votes = self._votes.get(symbol, {})
             fresh = [(v, w, s) for s, (v, w, ts) in votes.items() if ts >= cutoff]
@@ -3253,7 +3290,7 @@ class _TradingFloor:
     def emit(self, sender, text, kind="observation"):
         """kind in {'instruction','lesson','observation','training','user','system'}."""
         entry = {
-            "ts": datetime.now().isoformat(),
+            "ts": _et_naive().isoformat(),
             "sender": sender, "text": str(text)[:500], "kind": kind,
         }
         with self._lock:
@@ -3474,7 +3511,7 @@ class _VolatilityRegimeBrain(_BaseBrain):
             self.position_mult = mult
             self.severity = sev
             self.last_verdict = regime
-            self.last_action_ts = datetime.now()
+            self.last_action_ts = _et_naive()
             self.n_updates += 1
 
         if changed:
@@ -3590,7 +3627,7 @@ class _ManagerBrain(_BaseBrain):
             self._veto(symbol, reason); return False, reason
         with self._lock:
             self.approvals += 1; self.n_updates += 1
-            self.last_verdict = "APPROVE"; self.last_action_ts = datetime.now()
+            self.last_verdict = "APPROVE"; self.last_action_ts = _et_naive()
         BRAIN_COMMS.vote(self.name, symbol, +0.8, weight=1.5)
         return True, "APPROVE"
 
@@ -3598,7 +3635,7 @@ class _ManagerBrain(_BaseBrain):
         with self._lock:
             self.vetoes += 1; self.n_updates += 1
             self.veto_reasons[reason.split(":")[0]] += 1
-            self.last_verdict = "VETO"; self.last_action_ts = datetime.now()
+            self.last_verdict = "VETO"; self.last_action_ts = _et_naive()
         BRAIN_COMMS.vote(self.name, symbol, -0.8, weight=1.5)
         TRADING_FLOOR.emit(self.name, f"{symbol}: VETO — {reason}", "instruction")
 
@@ -4500,9 +4537,12 @@ try:
                     # UI expects: {sender, text, kind, ts (ISO)}
                     import datetime as _dt
                     def _fmt_ts(epoch):
+                        # New York time. The dashboard slices chars 11:19 out
+                        # of this string verbatim (no JS tz conversion), so the
+                        # ISO text itself must already be ET -- emitting UTC
+                        # here made the Brain Room clock run hours ahead.
                         try:
-                            return _dt.datetime.fromtimestamp(
-                                epoch, _dt.timezone.utc).isoformat()
+                            return _et_from_epoch(epoch).isoformat()
                         except Exception:
                             return ""
                     recent = [{
@@ -4911,7 +4951,7 @@ def brain_suite_replay_now(max_trades=500):
             sym = r.symbols
             qty = float(r.quantity or 0)
             price = float(r.price or 0)
-            ts = r.date if isinstance(r.date, datetime) else datetime.now()
+            ts = r.date if isinstance(r.date, datetime) else _et_naive()
             if action == "buy":
                 pending_buys.setdefault(sym, []).append((r.id, qty, price, ts))
             elif action == "sell" and pending_buys.get(sym):
@@ -4965,7 +5005,7 @@ def brain_suite_replay_now(max_trades=500):
             except Exception as e:
                 _brain_log("REPLAY", f"intel retrain failed: {e}")
 
-        state["last_run"] = datetime.now().isoformat()
+        state["last_run"] = _et_naive().isoformat()
         state["last_trade_id"] = last_id
         state["trades_replayed"] = state.get("trades_replayed", 0) + replayed
         _replay_state_save(state)
@@ -4978,7 +5018,7 @@ def brain_suite_replay_now(max_trades=500):
 def _replay_daily_loop():
     """Background thread: run replay once per day at ~3am local time."""
     while True:
-        now = datetime.now()
+        now = _et_naive()
         # target: next 3:00 AM
         target = now.replace(hour=3, minute=0, second=0, microsecond=0)
         if target <= now:
@@ -6344,7 +6384,7 @@ def _ml_train_on_examples(examples, run_kind):
             return f"model.save failed: {e}"
 
         meta = {
-            'trained_at': datetime.utcnow().isoformat(),
+            'trained_at': _et_now().isoformat(),
             'trained_from': f'historical_yfinance ({run_kind})',
             'n_examples': len(X),
             'n_train': int(len(X_train)),
@@ -7456,7 +7496,7 @@ def floor_post(from_name, msg_type, detail):
     training, alert, discuss, block, approve, learn, info.
     """
     ts = time.time()
-    ts_str = time.strftime('%H:%M:%S', time.localtime(ts))
+    ts_str = _et_from_epoch(ts).strftime('%H:%M:%S')  # New York time
     with _floor_lock:
         _floor_feed.append({
             'ts': ts, 'ts_str': ts_str,
@@ -9181,7 +9221,7 @@ def brain_f_pretrain_if_needed():
         # run from writing meta -- and since save/meta happen right next
         # to each other, the whole pretrain block half-completed.
         _ml_json.dump({
-            'trained_at': datetime.now(timezone.utc).isoformat(),
+            'trained_at': _et_now().isoformat(),
             'n_examples': int(len(X)),
             'n_features': BRAIN_F_FEATURES,
             'feature_labels': BRAIN_F_FEATURE_LABELS,
@@ -10774,7 +10814,7 @@ PORTFOLIO_LIQUIDATION_MIN_PROFIT_PCT = 0.01   # 1% combined; raise to 0.02 for 2
 # cannot freeze the main loop indefinitely.
 THREAD_JOIN_TIMEOUT = 180
 
-eastern = pytz.timezone('US/Eastern')
+eastern = _EASTERN_TZ
 
 stock_data = {}
 previous_prices = {}
@@ -11097,7 +11137,7 @@ def _yf_kwargs_to_alpaca_daily_days(kwargs):
         return None
     p = str(period).strip().lower()
     if p == 'ytd':
-        return (datetime.now().timetuple().tm_yday) + 5
+        return (_et_naive().timetuple().tm_yday) + 5
     if p.endswith('d'):
         try:
             return int(p[:-1])
@@ -13296,7 +13336,7 @@ def register_completed_round_trip(symbol, qty, price, label='EXIT'):
     try:
         today = datetime.now(eastern).strftime('%Y-%m-%d')
     except Exception:
-        today = str(date.today())
+        today = _et_naive().strftime('%Y-%m-%d')
     with _ROUND_TRIP_LOCK:
         if _ROUND_TRIP_STATE['date'] != today:
             _ROUND_TRIP_STATE['date'] = today
@@ -13420,7 +13460,7 @@ def round_trips_today():
     try:
         today = datetime.now(eastern).strftime('%Y-%m-%d')
     except Exception:
-        today = str(date.today())
+        today = _et_naive().strftime('%Y-%m-%d')
     with _ROUND_TRIP_LOCK:
         if _ROUND_TRIP_STATE['date'] != today:
             return 0
@@ -15712,7 +15752,7 @@ def _scanner_batch_download(symbols, start_date, end_date, retries=3):
         try:
             return datetime.strptime(str(x), "%Y-%m-%d")
         except Exception:
-            return datetime.now() - timedelta(days=365 * 2)
+            return _et_naive() - timedelta(days=365 * 2)
 
     start_dt = _to_dt(start_date)
     end_dt = _to_dt(end_date)
@@ -23942,7 +23982,7 @@ if _KSB_AVAILABLE:
         """Append one line to the startup training log. Prints to stdout
         (flushed) AND to brains/startup_train.log. Never raises."""
         try:
-            ts = _ksb_time.strftime("%H:%M:%S")
+            ts = _et_now().strftime("%H:%M:%S")  # New York time
             line = f"[{ts}][{brain}][{step}] {msg}".rstrip()
             with _STARTUP_LOG_LOCK:
                 _STARTUP_LOG.append((ts, brain, step, msg))
@@ -24020,7 +24060,7 @@ if _KSB_AVAILABLE:
         try:
             _ksb_os.makedirs(_ksb_os.path.dirname(_PYSPY_LOG_FILE),
                               exist_ok=True)
-            ts = _ksb_time.strftime("%Y-%m-%d %H:%M:%S")
+            ts = _et_now().strftime("%Y-%m-%d %H:%M:%S")  # New York time
             with open(_PYSPY_LOG_FILE, "a") as f:
                 f.write(f"\n{'═'*70}\n{ts}  thread dump [{source}] "
                         f"({tag})  pid={_ksb_os.getpid()}\n"
@@ -25016,7 +25056,7 @@ def write_foundation_lock(model) -> Dict[str, str]:
     rec = {
         "file_sha256": _sha256(FOUNDATION_PATH) if os.path.exists(FOUNDATION_PATH) else "",
         "weights_sha256": _weights_fingerprint(model),
-        "frozen_at": datetime.now(timezone.utc).isoformat(),
+        "frozen_at": _et_now().isoformat(),
         "n_params": int(model.count_params()),
         "emb_dim": EMB_TOTAL,
     }
@@ -25785,7 +25825,7 @@ class TimingBrain:
         rec = write_foundation_lock(foundation)
         with open(FOUNDATION_META, "w") as f:
             json.dump({
-                "pretrained_at": datetime.now(timezone.utc).isoformat(),
+                "pretrained_at": _et_now().isoformat(),
                 "corpus": "external" if external_corpus is not None else "synthetic",
                 "n_samples": int(n), "elapsed_s": round(time.time() - t0, 1),
                 "pretext_val": {k: float(v) for k, v in ev.items()},
@@ -26097,7 +26137,7 @@ class TimingRetrainer:
                 b.head = cand
                 b.meta = {
                     "version": version,
-                    "trained_at": datetime.now(timezone.utc).isoformat(),
+                    "trained_at": _et_now().isoformat(),
                     "n_samples": len(samples), "window_days": window_days,
                     "n_train": len(tr), "n_val": len(va), "n_test": len(te),
                     "val_loss": val_after, "test_sharpe": new["sharpe"],
@@ -26244,7 +26284,7 @@ class TimingRetrainer:
 
         def loop():
             while not self._stop.is_set():
-                now = datetime.now(tz) if tz else datetime.now()
+                now = datetime.now(tz) if tz else _et_now()
                 target = now.replace(hour=hour_et, minute=minute, second=0, microsecond=0)
                 if target <= now:
                     target += timedelta(days=1)
@@ -26331,7 +26371,7 @@ class Utterance:
 
     @property
     def clock(self) -> str:
-        return datetime.fromtimestamp(self.ts).strftime("%H:%M:%S")
+        return _et_from_epoch(self.ts).strftime("%H:%M:%S")  # New York time
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -27697,7 +27737,7 @@ class AutonomyLadder:
     def _log(self, action: str, reason: str):
         self.history.append({
             "ts": time.time(),
-            "iso": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "iso": _et_now().isoformat(timespec="seconds"),
             "action": action, "level": self.level, "reason": reason})
 
     # ---------------- reporting ----------------

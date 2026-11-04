@@ -1380,8 +1380,12 @@ const fmt = {
               {minimumFractionDigits: 2, maximumFractionDigits: 2}),
   pct: (v) => v == null ? '—' : (v * 100).toFixed(1) + '%',
   num: (v, d=2) => v == null ? '—' : Number(v).toFixed(d),
+  // All clock times on this dashboard are rendered in New York (market) time,
+  // regardless of the timezone the browser happens to be in. The incoming
+  // value is a UTC epoch, so the conversion is exact.
   time: (ts) => { const d = new Date(ts * 1000);
-                  return d.toLocaleTimeString('en-US', {hour12: false}); },
+                  return d.toLocaleTimeString('en-US',
+                           {hour12: false, timeZone: 'America/New_York'}); },
 };
 const pnlClass = v => v == null ? '' : (v >= 0 ? 'green' : 'red');
 const pnlSign = v => (v >= 0 ? '+' : '') + (v * 100).toFixed(2) + '%';
