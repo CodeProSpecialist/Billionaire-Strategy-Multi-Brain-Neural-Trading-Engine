@@ -7365,7 +7365,7 @@ BLACKLIST_FILE = os.path.join(_ml_base_dir, 'blacklist.json')
 BLACKLIST_TEMP_DURATION_SECONDS = 72 * 3600   # 72 hours
 
 # ---------------------------------------------------------------------------
-# HARDCODED PERMANENT BLACKLIST SEED — RNA coronavirus-vaccine makers
+# HARDCODED PERMANENT BLACKLIST SEED — RNA vaccine makers + Honeywell/HVAC
 # ---------------------------------------------------------------------------
 # Operator policy: the bot never buys RNA-vaccine companies. This set is
 # merged into the permanent blacklist on every startup, so it survives a
@@ -7384,6 +7384,20 @@ BLACKLIST_PERMANENT_SEED = {
     'DSNKY',  # Daiichi Sankyo ADR — DS-5670 mRNA COVID vaccine (approved in Japan)
     'DSKYF',  # Daiichi Sankyo ordinary ADR line (same issuer as DSNKY)
     'MSKKY',  # Meiji Seika Pharma ADR — markets Kostaive mRNA COVID vaccine in Japan
+
+    # ---- Honeywell and HVAC / building-climate names ----
+    # Operator policy: the bot never buys Honeywell or HVAC companies.
+    # Blocking a symbol stops BUYS only -- any position already held is
+    # still managed and sold normally by the exit chain.
+    'HON',    # Honeywell International — building controls / HVAC
+    'CARR',   # Carrier Global — HVAC
+    'TT',     # Trane Technologies — HVAC
+    'JCI',    # Johnson Controls — building HVAC controls
+    'LII',    # Lennox International — HVAC
+    'AAON',   # AAON Inc — commercial HVAC equipment
+    'WSO',    # Watsco — HVAC distribution
+    'WSO.B',  # Watsco class B line
+    'FIX',    # Comfort Systems USA — HVAC installation / service
 }
 
 
