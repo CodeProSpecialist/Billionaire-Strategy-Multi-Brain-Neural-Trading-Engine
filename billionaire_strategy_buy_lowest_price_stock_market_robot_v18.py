@@ -12554,6 +12554,10 @@ def yf_download_batch(symbols, **kwargs):
     Returns {symbol: DataFrame}. Symbols that came back empty are omitted.
     Consumes ONE slot from the yfinance gate only if the fallback runs.
     """
+    # Drop symbols already known to return nothing (delisted, acquired,
+    # renamed away). Saves the rate-limit budget and keeps the logs honest.
+    # Quarantine expires on its own, so this never permanently hides a name.
+    symbols = NO_DATA.filter_symbols(symbols)
     syms = [to_yf(s) for s in symbols]
     if not syms:
         return {}
@@ -12612,6 +12616,13 @@ def yf_download_batch(symbols, **kwargs):
                 out[orig] = df.dropna(how='all')
         except (KeyError, TypeError):
             continue
+    # Teach the registry which names produced data and which came back empty.
+    # Three consecutive empties quarantines a symbol; any hit resets it.
+    for orig in symbols:
+        if orig in out:
+            NO_DATA.record_hit(orig)
+        else:
+            NO_DATA.record_miss(orig, "empty batch result")
     return out
 
 
@@ -12681,14 +12692,162 @@ def prewarm_daily_cache(symbols):
 
 
 # ---------------- Symbol helpers (BUGFIX: consistent normalization) ----------------
+# ---------------------------------------------------------------------------
+# TICKER RENAMES
+# ---------------------------------------------------------------------------
+# A renamed ticker looks EXACTLY like a delisting to yfinance ("possibly
+# delisted; no timezone found"), which is why MMC was showing up alongside the
+# genuinely dead names in the logs. Marsh & McLennan is very much alive — it
+# changed its NYSE symbol from MMC to MRSH on 2026-01-14. Quarantining it as
+# delisted would have silently dropped a live S&P 500 company from the
+# universe forever. Map renames here so the fetch follows the new symbol.
+SYMBOL_RENAMES = {
+    'MMC': 'MRSH',    # Marsh & McLennan -> MRSH, effective 2026-01-14
+}
+
+
+def apply_symbol_rename(sym):
+    """Translate a known-renamed ticker to its current symbol."""
+    try:
+        s = sym.strip().upper()
+        return SYMBOL_RENAMES.get(s, s)
+    except Exception:
+        return sym
+
+
 def to_yf(sym):
     """yfinance uses dashes for share classes: BRK.B -> BRK-B"""
-    return sym.strip().upper().replace('.', '-')
+    return apply_symbol_rename(sym).replace('.', '-')
 
 
 def to_alpaca(sym):
     """Alpaca uses dots: BRK-B -> BRK.B"""
-    return sym.strip().upper().replace('-', '.')
+    return apply_symbol_rename(sym).replace('-', '.')
+
+
+# ---------------------------------------------------------------------------
+# NO-DATA (DELISTED) SYMBOL REGISTRY
+# ---------------------------------------------------------------------------
+# Dead tickers sit in the hardcoded S&P/NASDAQ universes forever. Every run
+# re-fetched ANSS, WBA, EA and WBD, burned rate-limit budget on names that can
+# never return data, and filled the log with errors that look like real faults.
+#
+# This registry learns which symbols have no data and skips them, WITHOUT the
+# brittleness of a hardcoded dead list:
+#   * a symbol is quarantined only after NO_DATA_STRIKES consecutive misses,
+#     so one transient yfinance hiccup cannot evict a live name;
+#   * quarantine EXPIRES after NO_DATA_TTL_DAYS and the symbol is retried, so
+#     a name that comes back (or a yfinance outage that looked like a
+#     delisting) heals on its own with no code change;
+#   * any successful fetch clears the strike count immediately.
+# This is deliberately NOT the buy blacklist: that blocks orders for policy
+# reasons, this skips fetches for data reasons.
+NO_DATA_FILE = os.path.join(_BASE_DIR, 'no_data_symbols.json')
+NO_DATA_STRIKES = 3           # consecutive misses before quarantine
+NO_DATA_TTL_DAYS = 30         # retry a quarantined symbol after this long
+
+
+class NoDataRegistry:
+    """Tracks symbols that return no market data. Thread-safe, persisted."""
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self.strikes = {}      # symbol -> consecutive miss count
+        self.quarantined = {}  # symbol -> epoch when quarantined
+        self._load()
+
+    def _load(self):
+        try:
+            if os.path.exists(NO_DATA_FILE):
+                with open(NO_DATA_FILE) as f:
+                    d = json.load(f) or {}
+                self.strikes = {k.upper(): int(v) for k, v in (d.get('strikes') or {}).items()}
+                self.quarantined = {k.upper(): float(v)
+                                    for k, v in (d.get('quarantined') or {}).items()}
+        except Exception as e:
+            logging.warning("NoDataRegistry: load failed (%s) — starting empty", e)
+            self.strikes, self.quarantined = {}, {}
+
+    def _save(self):
+        try:
+            with open(NO_DATA_FILE, 'w') as f:
+                json.dump({'strikes': self.strikes,
+                           'quarantined': self.quarantined}, f, indent=2)
+        except Exception as e:
+            logging.warning("NoDataRegistry: save failed (%s)", e)
+
+    def is_quarantined(self, sym):
+        """True if this symbol should be skipped right now."""
+        try:
+            s = apply_symbol_rename(sym)
+            with self._lock:
+                ts = self.quarantined.get(s)
+                if ts is None:
+                    return False
+                if (time.time() - ts) > NO_DATA_TTL_DAYS * 86400:
+                    # TTL expired — give it another chance.
+                    self.quarantined.pop(s, None)
+                    self.strikes.pop(s, None)
+                    self._save()
+                    logging.info("NoDataRegistry: %s quarantine expired after "
+                                 "%d days — will retry it", s, NO_DATA_TTL_DAYS)
+                    return False
+                return True
+        except Exception:
+            return False
+
+    def record_miss(self, sym, reason=""):
+        try:
+            s = apply_symbol_rename(sym)
+            with self._lock:
+                if s in self.quarantined:
+                    return
+                n = self.strikes.get(s, 0) + 1
+                self.strikes[s] = n
+                if n >= NO_DATA_STRIKES:
+                    self.quarantined[s] = time.time()
+                    self.strikes.pop(s, None)
+                    self._save()
+                    logging.warning(
+                        "NoDataRegistry: %s returned no data %d times in a row "
+                        "(%s) — skipping it for %d days, then retrying "
+                        "automatically", s, n, reason or "no data",
+                        NO_DATA_TTL_DAYS)
+                else:
+                    self._save()
+        except Exception:
+            pass
+
+    def record_hit(self, sym):
+        """A successful fetch clears any accumulated strikes."""
+        try:
+            s = apply_symbol_rename(sym)
+            with self._lock:
+                if self.strikes.pop(s, None) is not None:
+                    self._save()
+        except Exception:
+            pass
+
+    def filter_symbols(self, symbols):
+        """Drop quarantined names from a universe before fetching."""
+        try:
+            out, skipped = [], []
+            for s in symbols or []:
+                (skipped if self.is_quarantined(s) else out).append(s)
+            if skipped:
+                logging.info("NoDataRegistry: skipping %d no-data symbol(s): %s",
+                             len(skipped), ', '.join(sorted(set(skipped))))
+            return out
+        except Exception:
+            return list(symbols or [])
+
+    def status(self):
+        with self._lock:
+            return {'quarantined': sorted(self.quarantined.keys()),
+                    'pending_strikes': dict(self.strikes)}
+
+
+NO_DATA = NoDataRegistry()
 
 
 # BUGFIX: get_cached_data used to be @sleep_and_retry/@limits decorated. That was
