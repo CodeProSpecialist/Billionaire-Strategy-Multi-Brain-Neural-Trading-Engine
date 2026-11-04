@@ -7671,11 +7671,12 @@ class PerSymbolPerformance:
             self._save()
 
     def kelly_fraction(self, symbol, cap=None):
-        """Half-Kelly fraction for this symbol, based on its own closed-trade
+        """Fractional-Kelly fraction for this symbol, based on its own closed-trade
         record. Returns None until enough per-symbol data exists
         (>= KELLY_MIN_TRADES, with at least one win AND one loss and
         non-zero win/loss dollar sums). The returned value is HALF the
-        classic Kelly f* = (p*b - q)/b (halved to tame estimation error on
+        classic Kelly f* = (p*b - q)/b (scaled by KELLY_SCALE to tame
+        estimation error on
         small samples), clamped to `cap` (default KELLY_MAX_FRACTION).
         A negative full-Kelly returns 0.0 -- the caller can then fall back
         to its default sizing.
@@ -7701,9 +7702,9 @@ class PerSymbolPerformance:
         kelly = (p * b - q) / b                # classic Kelly
         if kelly <= 0:
             return 0.0
-        half = 0.5 * kelly                     # half-Kelly for robustness
+        scaled = KELLY_SCALE * kelly           # fractional Kelly for robustness
         c = KELLY_MAX_FRACTION if cap is None else float(cap)
-        return max(0.0, min(c, half))
+        return max(0.0, min(c, scaled))
 
     def win_rate(self, symbol):
         s = self.stats.get((symbol or '').upper())
@@ -10240,7 +10241,28 @@ MAX_ALLOCATION_PER_SYMBOL = 600.0
 USE_KELLY_SIZING = True
 KELLY_MIN_TRADES = 10
 KELLY_MAX_FRACTION = 0.05        # cap at 5% of equity per position
-MAX_NEW_POSITIONS_PER_CYCLE = 3  # rank all qualifying candidates, only buy the top N (review item #9)
+# Operator rule: ONE-THIRD Kelly, not half. Full Kelly maximises long-run
+# growth only if the win/payoff estimates are exact; they are estimated here
+# from a small sample of this bot's own closed trades, and overestimating the
+# edge is the expensive direction of that error. A third of Kelly gives up a
+# modest amount of theoretical growth for a large reduction in drawdown.
+KELLY_SCALE = 1.0 / 3.0          # fraction of classic Kelly actually used
+
+# Never commit the whole cash balance to a single order. Applies to BOTH the
+# Kelly path and the ATR-risk fallback, since it is enforced through the
+# headroom cap rather than inside the sizing formula.
+# Operator rule: do not put all the eggs in one basket. A single order may
+# use at most this fraction of available cash, so the cash can always fund
+# DAILY_MAX_POSITIONS_NON_BULL separate names. Applies in EVERY regime --
+# bull days use the same position sizing -- and binds on both the Kelly path
+# and the ATR-risk fallback, because it is enforced through the headroom cap
+# rather than inside either sizing formula.
+MAX_CASH_FRACTION_PER_ORDER = 1.0 / 8.0
+# Operator rule: place all 8 buy orders SIMULTANEOUSLY during the buying
+# window rather than dribbling them out over successive cycles. This must
+# be >= DAILY_MAX_POSITIONS_NON_BULL or the day's allowance cannot be
+# filled in a single pass.
+MAX_NEW_POSITIONS_PER_CYCLE = 8  # rank all qualifying candidates, only buy the top N (review item #9)
 
 # ---------------- One-position-per-trading-day mode -------------------------
 # Operator spec: buy exactly ONE position per trading day -- the best-ranked
@@ -10268,6 +10290,14 @@ MAX_NEW_POSITIONS_PER_CYCLE = 3  # rank all qualifying candidates, only buy the 
 # is MAX_NEW_POSITIONS_PER_CYCLE (per CYCLE, not per day) and the gates.
 ONE_PER_DAY_MODE        = 'off'     # 'armed' | 'shadow' | 'off'
 ONE_PER_DAY_MAX         = 1         # positions per trading day WHEN armed
+                                    # (the configured value; the regime-driven
+                                    #  ceiling below overrides it when armed)
+
+# Operator rule: on sideways/neutral days we may hold up to EIGHT positions,
+# with cash split equally between them, rather than concentrating the day in
+# a single name. bear/panic never place a buy at all (check_regime_buy_window
+# ends the cycle), so in practice this ceiling governs sideways days.
+DAILY_MAX_POSITIONS_NON_BULL = 8
 
 # The composite ranker is INDEPENDENT of the daily cap -- which candidate
 # ranks highest still matters when several are bought in a cycle.
@@ -10373,6 +10403,27 @@ def _one_per_day_roll_day_locked(today):
               f"(recovered from the database after a restart).")
 
 
+def one_per_day_max_positions():
+    """How many positions may be opened today, under the effective mode.
+
+    Operator rule: a sideways/neutral day allows up to
+    DAILY_MAX_POSITIONS_NON_BULL (8) positions with cash split equally
+    between them -- not all the eggs in one basket, but still a hard daily
+    ceiling. Bull days are uncapped (one_per_day_effective_mode returns
+    'off', so this is never consulted).
+
+    Falls back to the configured ONE_PER_DAY_MAX if the regime cannot be
+    read, which is the conservative direction.
+    """
+    try:
+        regime = get_latched_session_regime()
+    except Exception:
+        return ONE_PER_DAY_MAX
+    if regime is None or regime == REGIME_BULL:
+        return ONE_PER_DAY_MAX
+    return int(DAILY_MAX_POSITIONS_NON_BULL)
+
+
 def one_per_day_slots_left():
     """Positions still allowed to open today under the effective mode."""
     if one_per_day_effective_mode() == 'off':
@@ -10381,7 +10432,8 @@ def one_per_day_slots_left():
     with _one_per_day_lock:
         if _one_per_day_state['date'] != today:
             _one_per_day_roll_day_locked(today)
-        return max(0, int(ONE_PER_DAY_MAX) - int(_one_per_day_state['opened']))
+        return max(0, int(one_per_day_max_positions())
+                   - int(_one_per_day_state['opened']))
 
 
 def one_per_day_record_open(n=1):
@@ -10436,9 +10488,9 @@ EARLY_MORNING_GATE_MODE = 'armed'           # 'armed' | 'shadow' | 'off'
 #   sideways  -> buys allowed 10:30 ET .. 11:15 ET, ONLY upward-momentum
 #                dips (the momentum gate runs STRICT: no shadow pass-
 #                through, no fail-open on missing data), and AT MOST ONE
-#                position for the entire day (the one-per-day cap is
-#                forced on for every non-bull regime; see
-#                one_per_day_effective_mode)
+#                at most DAILY_MAX_POSITIONS_NON_BULL (8) positions for
+#                the day, with cash split equally between them (see
+#                one_per_day_effective_mode / MAX_CASH_FRACTION_PER_ORDER)
 #   bear      -> no buys at all; "market is not profitable today"
 #   panic     -> no buys at all; "market is not profitable today"
 #   unknown   -> no buys at all (fail closed: if the regime could not be
@@ -19805,8 +19857,9 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
             # armed on a sideways day (one stock for the whole day).
             if (one_per_day_effective_mode() == 'armed'
                     and one_per_day_slots_left() <= 0):
-                print(f"  [one-per-day] daily position already opened — "
-                      f"no further entries today.")
+                print(f"  [daily cap] "
+                      f"{one_per_day_max_positions()} position(s) already "
+                      f"opened today — no further entries today.")
                 update_previous_price(symbol, current_price)
                 break
 
@@ -20464,7 +20517,7 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
                 risk_amount = RISK_PER_TRADE_PCT * total_equity
 
                 # Kelly sizing: when this symbol has enough of the bot's own
-                # closed-trade history, size from a half-Kelly fraction of
+                # closed-trade history, size from a one-third-Kelly fraction of
                 # equity instead of the ATR risk sizing. Falls back to the
                 # ATR sizing when Kelly returns None or 0.0 (insufficient
                 # data, or full-Kelly non-positive). See kelly_fraction() +
@@ -20479,6 +20532,7 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
                     if kf is not None and kf > 0:
                         kelly_notional = kf * total_equity
                         print(f"{yf_symbol}: kelly f*={kf*100:.2f}% of equity "
+                              f"(1/3 Kelly) "
                               f"-> notional ${kelly_notional:.2f} "
                               f"(vs ATR-risk-sized).")
                 if kelly_notional is not None:
@@ -20488,10 +20542,17 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
 
                 with lock:
                     cash_available = float(api.get_account().cash)
+                # Operator rule: never spend the entire cash balance on one
+                # order. MAX_CASH_FRACTION_PER_ORDER caps a single entry at a
+                # fraction of available cash, in BOTH cash and margin mode --
+                # in margin mode cash was previously not a limit here at all.
+                _cash_cap = max(0.0, (cash_available - CASH_BUFFER)
+                                * MAX_CASH_FRACTION_PER_ORDER)
                 headroom = min(
                     MAX_ALLOCATION_PER_SYMBOL,
                     max_new_exposure,
                     (cash_available - CASH_BUFFER) if ACCOUNT_MODE == 'cash' else max_new_exposure,
+                    _cash_cap,
                 )
 
                 # BUGFIX: on small accounts, risk-based sizing always lands below the
