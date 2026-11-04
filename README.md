@@ -33,8 +33,9 @@ Every buy order has to survive a committee. A timing brain scores it, a day-trad
 | **Universe** | 82 technology, computer and consumer-electronics brands (NASDAQ + NYSE), mid cap and up — scanned and ranked every cycle, **top 25** eligible to buy |
 | **Buy window** | **10:30–11:30 AM Eastern only**, and only when the latched regime is bullish or sideways |
 | **Entries** | Up to **25 positions in a single pass**, cash split equally. Bull days use the **same setup as sideways** (20-day dip, 2% stop, 3% target) |
-| **Entry signal** | Chandelier Exit (22, 3) direction flip + MACD(12,26,9) histogram reversal off the trough, confirmed on the first reversing bar |
-| **Exit signal** | CE flip, MACD histogram climax, chandelier ATR trail, profit monitor giveback, round-trip rescue, hard stop |
+| **Entry signal** | `dip_20d` — price ≥1% off its 3-hour high and turning up on the current bar, in a name with positive 20-day momentum |
+| **Regimes that trade** | Bull and sideways only, using the **identical** rule. Bear and panic buy nothing |
+| **Exit signal** | Playbook 2% stop / 3% target, plus the chandelier ATR trail, profit-monitor giveback, round-trip rescue, hard stop and the 3:45pm sweep — none of them gated by the buy window |
 | **Hold time** | Minutes, not days — most winners are 5-minute moves; a runner is allowed up to an hour while RSI stays elevated |
 | **Overnight** | Anything green by a penny is sold before the bell; losers may carry up to two trading days |
 | **Data** | Alpaca IEX daily bars (fast path), yfinance for intraday 1m/5m and fallback |
@@ -202,6 +203,32 @@ The amber state matters: without it, a bearish day and a hung robot look identic
 > **Backtest caveat:** the playbook's published +0.11%/trade figure was measured on the **Nasdaq-100**. The live universe is now the 82-name tech+electronics list, which that backtest does not cover — treat the figure as historical context for a different universe, not as a forecast for this one. Set `PLAYBOOK_NDX_UNIVERSE_SOURCE = 'ndx100'` to return to the backtested configuration.
 
 **Wide scan, narrow buy list.** The whole universe is measured and scored every cycle — nothing is skipped — but only the **top 25** are eligible to be bought. Ranking uses the operator composite (relative dollar volume, 20-day momentum, market-cap proxy), z-scored across the candidates so no one factor's raw units dominate, and is applied *after* the liquidity and momentum filters so the 25 slots go to names that already qualify. A name ranked 26th is not bought even with a perfect setup, and the leaders will tend to recur day to day — that is what ranking does.
+
+**The rules, in order.** Every buy must clear all of these, in this sequence:
+
+| # | Gate | Rule |
+|---|---|---|
+| 1 | **Clock** | 10:30–11:30 AM Eastern. Outside it, no order is placed — checked at the top of the cycle *and* again immediately before `submit_order` |
+| 2 | **Regime** | Latched at 10:30 from samples taken 10:00–10:30. Bull or sideways trades; bear, panic and unmeasured do not |
+| 3 | **Universe** | 82 technology, computer and consumer-electronics names (NASDAQ + NYSE), mid cap and up |
+| 4 | **Liquidity** | ≥ $20M average daily dollar volume |
+| 5 | **Momentum** | Positive 20-day momentum |
+| 6 | **Shortlist** | Ranked by dollar volume + 20-day momentum + market-cap proxy; only the **top 25** remain eligible |
+| 7 | **Setup** | `dip_20d` must fire: ≥1% off the 3-hour high and turning up on the current bar |
+| 8 | **Daily cap** | At most 25 positions for the day, cash split equally |
+
+**Per regime:**
+
+| Regime | Setup | Stop | Target | Max/day |
+|---|---|---|---|---|
+| **Bull** | `dip_20d` | 2% | 3% | 25 |
+| **Sideways** | `dip_20d` | 2% | 3% | 25 |
+| **Bear** | `gap_reversal` | 2% | 3% | 5 — *configured but dormant; the window gate ends the cycle before the playbook is consulted* |
+| **Panic / unknown** | — | — | — | 0 |
+
+Bull and sideways are deliberately identical: a bull day buys exactly the way a sideways day does. The regime decides only **whether** the day trades, not **how**.
+
+> **A consequence worth knowing:** `dip_20d` needs a pullback of at least 1% off the 3-hour high. On a strong bull morning names often grind upward without pulling back that far — which is exactly when the setup will *not* fire. Bull days may therefore produce *fewer* fills than sideways days, not more.
 
 The window is an **entry** gate only. Stops, the profit monitor, the chandelier trail, scale-outs, and the close sweeps are never gated by it — an open position can always leave, at any hour, in any regime. The check is enforced twice: once at the top of the buy cycle, and again immediately before `submit_order`, because a scan can run for minutes and the window can close underneath it.
 
@@ -399,6 +426,11 @@ The constants live near the top of the `.py` file; the dashboard-editable ones a
 | `REGIME_ASSESS_ET` | `10:30` | Majority verdict is latched for the session |
 | `PLAYBOOK_NDX_UNIVERSE_SOURCE` | `tech` | `tech` = 82 tech+electronics names, `ndx100` = full Nasdaq-100 |
 | `DAILY_MAX_POSITIONS` | `25` | Positions per day on a tradable (bull or sideways) day |
+| `PLAYBOOK_RULES['bull']` | `dip_20d, 2%, 3%, 25` | Bull-day rule — an exact copy of the sideways rule |
+| `PLAYBOOK_RULES['sideways']` | `dip_20d, 2%, 3%, 25` | Sideways-day rule |
+| `MAX_NEW_POSITIONS_PER_CYCLE` | `25` | Positions opened in one pass |
+| `MAX_CASH_FRACTION_PER_ORDER` | `1/25` | Cash split equally across the 25 slots |
+| `BULL_BUY_WINDOW_START/END` | `10:30` / `11:30` | Legacy bull-v8 window, aligned to the deployment hour |
 | `NDX_TOP_N_MODE` | `armed` | `armed` = only the top-ranked names may be bought, `off` = whole universe |
 | `NDX_TOP_N` | `25` | How many ranked names are eligible to buy |
 | `EARLY_MORNING_CUTOFF_ET` | `10:30` | When the early gate opens fully |
