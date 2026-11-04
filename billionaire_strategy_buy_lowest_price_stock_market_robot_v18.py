@@ -10253,16 +10253,17 @@ KELLY_SCALE = 1.0 / 3.0          # fraction of classic Kelly actually used
 # headroom cap rather than inside the sizing formula.
 # Operator rule: do not put all the eggs in one basket. A single order may
 # use at most this fraction of available cash, so the cash can always fund
-# DAILY_MAX_POSITIONS_NON_BULL separate names. Applies in EVERY regime --
+# DAILY_MAX_POSITIONS_NON_BULL separate names, ranked most-profit-probable
+# first by the existing rank_score. Applies in EVERY regime --
 # bull days use the same position sizing -- and binds on both the Kelly path
 # and the ATR-risk fallback, because it is enforced through the headroom cap
 # rather than inside either sizing formula.
-MAX_CASH_FRACTION_PER_ORDER = 1.0 / 8.0
-# Operator rule: place all 8 buy orders SIMULTANEOUSLY during the buying
+MAX_CASH_FRACTION_PER_ORDER = 1.0 / 20.0
+# Operator rule: place all 20 buy orders SIMULTANEOUSLY during the buying
 # window rather than dribbling them out over successive cycles. This must
 # be >= DAILY_MAX_POSITIONS_NON_BULL or the day's allowance cannot be
 # filled in a single pass.
-MAX_NEW_POSITIONS_PER_CYCLE = 8  # rank all qualifying candidates, only buy the top N (review item #9)
+MAX_NEW_POSITIONS_PER_CYCLE = 20  # rank all qualifying candidates, only buy the top N (review item #9)
 
 # ---------------- One-position-per-trading-day mode -------------------------
 # Operator spec: buy exactly ONE position per trading day -- the best-ranked
@@ -10293,11 +10294,11 @@ ONE_PER_DAY_MAX         = 1         # positions per trading day WHEN armed
                                     # (the configured value; the regime-driven
                                     #  ceiling below overrides it when armed)
 
-# Operator rule: on sideways/neutral days we may hold up to EIGHT positions,
+# Operator rule: on sideways/neutral days we may hold up to TWENTY positions,
 # with cash split equally between them, rather than concentrating the day in
 # a single name. bear/panic never place a buy at all (check_regime_buy_window
 # ends the cycle), so in practice this ceiling governs sideways days.
-DAILY_MAX_POSITIONS_NON_BULL = 8
+DAILY_MAX_POSITIONS_NON_BULL = 20
 
 # The composite ranker is INDEPENDENT of the daily cap -- which candidate
 # ranks highest still matters when several are bought in a cycle.
@@ -10407,7 +10408,7 @@ def one_per_day_max_positions():
     """How many positions may be opened today, under the effective mode.
 
     Operator rule: a sideways/neutral day allows up to
-    DAILY_MAX_POSITIONS_NON_BULL (8) positions with cash split equally
+    DAILY_MAX_POSITIONS_NON_BULL (20) positions with cash split equally
     between them -- not all the eggs in one basket, but still a hard daily
     ceiling. Bull days are uncapped (one_per_day_effective_mode returns
     'off', so this is never consulted).
@@ -10488,7 +10489,7 @@ EARLY_MORNING_GATE_MODE = 'armed'           # 'armed' | 'shadow' | 'off'
 #   sideways  -> buys allowed 10:30 ET .. 11:15 ET, ONLY upward-momentum
 #                dips (the momentum gate runs STRICT: no shadow pass-
 #                through, no fail-open on missing data), and AT MOST ONE
-#                at most DAILY_MAX_POSITIONS_NON_BULL (8) positions for
+#                at most DAILY_MAX_POSITIONS_NON_BULL (20) positions for
 #                the day, with cash split equally between them (see
 #                one_per_day_effective_mode / MAX_CASH_FRACTION_PER_ORDER)
 #   bear      -> no buys at all; "market is not profitable today"
