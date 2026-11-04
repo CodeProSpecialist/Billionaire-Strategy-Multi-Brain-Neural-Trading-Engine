@@ -10432,7 +10432,7 @@ EARLY_MORNING_GATE_MODE = 'armed'           # 'armed' | 'shadow' | 'off'
 # bought before 10:30 ET.
 #
 #   bull      -> buys allowed 10:30 ET .. 12:30 ET
-#   sideways  -> buys allowed 10:30 ET .. 11:00 ET, ONLY upward-momentum
+#   sideways  -> buys allowed 10:30 ET .. 11:15 ET, ONLY upward-momentum
 #                dips (the momentum gate runs STRICT: no shadow pass-
 #                through, no fail-open on missing data), and AT MOST ONE
 #                position for the entire day (the one-per-day cap is
@@ -10454,7 +10454,7 @@ REGIME_ASSESS_ET = _dt_time(10, 30)     # when the daily regime verdict is taken
 
 REGIME_BUY_WINDOW_END_ET = {
     'bull':     _dt_time(12, 30),       # no buys after 12:30 PM ET
-    'sideways': _dt_time(11, 0),        # no buys after 11:00 AM ET
+    'sideways': _dt_time(11, 15),       # no buys after 11:15 AM ET
     # 'bear', 'panic' and anything unrecognized are absent on purpose ->
     # a missing key means NO BUYS AT ALL for that regime.
 }
@@ -19536,7 +19536,7 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
 
     # ---------------- Regime buy-window gate ----------------
     # Latched once at 10:30 ET: bull buys until 12:30 ET, sideways until
-    # 11:00 ET, bear/panic/unknown not at all. Entries only -- exits are never
+    # 11:15 ET, bear/panic/unknown not at all. Entries only -- exits are never
     # gated by this. Runs after the observe/feed call above so the brains keep
     # learning on days we never place a buy.
     _rg_allow, _rg_reason = check_regime_buy_window()
