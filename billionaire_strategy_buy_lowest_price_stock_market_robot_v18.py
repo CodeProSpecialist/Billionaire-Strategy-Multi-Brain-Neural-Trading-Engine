@@ -10299,12 +10299,6 @@ ONE_PER_DAY_MAX         = 1         # positions per trading day WHEN armed
 # ends the cycle), so in practice this ceiling governs sideways days.
 DAILY_MAX_POSITIONS_NON_BULL = 8
 
-# How far the newest portfolio-history equity mark may differ from live
-# account equity before we stop believing the history series. Some accounts
-# return marks that track buying power rather than account value, which made
-# a fully-deployed account look like a ~96% one-day loss.
-PORTFOLIO_MARK_TOLERANCE = 0.25      # 25%
-
 # The composite ranker is INDEPENDENT of the daily cap -- which candidate
 # ranks highest still matters when several are bought in a cycle.
 COMPOSITE_RANK_MODE     = 'armed'   # 'armed' | 'off'
@@ -13766,6 +13760,64 @@ def _cancel_existing_sell_orders(symbol, sweep_label, now_str):
         time.sleep(1)
 
     return cancelled
+
+
+def _logged_trade_pl(start_date, end_date):
+    """Realized P/L from ALPACA's own fill record between two dates.
+
+    Operator rule: if Alpaca did not log the trade, the balance change is a
+    deposit or a withdrawal, not profit or loss. Alpaca's activity log is
+    the authority here rather than this bot's trade_history table, because
+    the broker sees every fill -- including orders placed by hand or by
+    another session -- and a trade missing from the local DB would otherwise
+    be misreported as a transfer.
+
+    Returns summed sell proceeds minus buy cost over the range, 0.0 when
+    Alpaca logged no fills in it, or None if the activity log cannot be read
+    (the caller then falls back to the raw equity delta).
+    """
+    acts = None
+    try:
+        acts = api.get_activities(activity_types='FILL',
+                                  after=str(start_date), until=str(end_date))
+    except TypeError:
+        # Older SDKs use different kwarg names; try the positional form.
+        try:
+            acts = api.get_activities(activity_types='FILL')
+        except Exception as e:
+            logging.warning("[portfolio] Alpaca activity log unreadable (%s)", e)
+            return None
+    except Exception as e:
+        logging.warning("[portfolio] Alpaca activity log unreadable (%s)", e)
+        return None
+
+    if acts is None:
+        return None
+    total = 0.0
+    seen = 0
+    for a in acts:
+        try:
+            d = str(getattr(a, 'transaction_time', '') or
+                    getattr(a, 'date', ''))[:10]
+            if not d:
+                continue
+            # after/until are not always honoured identically across SDK
+            # versions, so filter by date here as well.
+            if not (str(start_date) < d <= str(end_date)):
+                continue
+            qty = float(getattr(a, 'qty', 0) or 0)
+            price = float(getattr(a, 'price', 0) or 0)
+            side = (getattr(a, 'side', '') or '').strip().lower()
+        except (TypeError, ValueError):
+            continue
+        amt = qty * price
+        if side.startswith('sell'):
+            total += amt
+            seen += 1
+        elif side.startswith('buy'):
+            total -= amt
+            seen += 1
+    return total if seen else 0.0
 
 
 def _floor_qty(q, places=6):
@@ -23354,6 +23406,10 @@ def print_portfolio_gain_summary(force=False):
     try:
         timestamps = list(hist.timestamp or [])
         equities = list(hist.equity or [])
+        # P/L per period, EXCLUDING cash transfers. Alpaca supplies this
+        # alongside equity; older/stubbed responses may not, in which case
+        # we degrade to an equity-difference calculation and say so.
+        profit_losses = list(getattr(hist, 'profit_loss', None) or [])
     except Exception as e:
         print(f"[portfolio] malformed portfolio history response: {e}")
         return
@@ -23368,13 +23424,17 @@ def print_portfolio_gain_summary(force=False):
     # Build a (date, equity) list, keeping only entries whose date falls on
     # a valid NYSE session. Alpaca's timestamps are UTC epoch seconds; we
     # convert to US/Eastern first so the date matches the trading calendar.
+    have_pl = len(profit_losses) == len(timestamps)
     paired = []
-    for ts, eq in zip(timestamps, equities):
+    for i, (ts, eq) in enumerate(zip(timestamps, equities)):
         if eq is None:
             continue
         try:
             dt_et = datetime.fromtimestamp(ts, tz=pytz.UTC).astimezone(eastern)
-            paired.append((dt_et.date(), float(eq)))
+            pl = None
+            if have_pl and profit_losses[i] is not None:
+                pl = float(profit_losses[i])
+            paired.append((dt_et.date(), float(eq), pl))
         except Exception:
             continue
 
@@ -23399,15 +23459,16 @@ def print_portfolio_gain_summary(force=False):
         valid_sessions = None
 
     if valid_sessions is not None:
-        paired = [(d, eq) for (d, eq) in paired if d in valid_sessions]
+        paired = [t for t in paired if t[0] in valid_sessions]
 
     # Collapse duplicate dates by taking the LAST equity for each date
     # (get_portfolio_history at 1D should already be one-per-day, but
     # belt-and-suspenders after the timezone conversion).
     by_date = {}
-    for d, eq in paired:
-        by_date[d] = eq
-    ordered = sorted(by_date.items())  # [(date, equity)] ascending
+    for d, eq, pl in paired:
+        by_date[d] = (eq, pl)
+    # [(date, equity, profit_loss_or_None)] ascending
+    ordered = [(d, v[0], v[1]) for d, v in sorted(by_date.items())]
 
     if len(ordered) < 2:
         text = (f"[portfolio] only {len(ordered)} trading-day equity mark(s) so far. "
@@ -23417,21 +23478,18 @@ def print_portfolio_gain_summary(force=False):
         _LAST_PORTFOLIO_FETCH_TS = now_ts
         return
 
-    latest_date, latest_equity = ordered[-1]
+    latest_date, latest_equity, _latest_pl = ordered[-1]
 
-    # ---------------- Sanity-check the history against live equity ---------
-    # BUGFIX: this block printed the last portfolio-history mark as "Current
-    # equity" and computed window percentages from it. On at least some
-    # accounts those marks track BUYING POWER rather than account value, so
-    # with most of the account deployed in positions the series read like
-    # 208.70 -> 8.68 and the block reported a 95.84% one-day loss that never
-    # happened. Money moving into a position is not money lost.
+    # ---------------- Live equity, for display only ------------------------
+    # The history marks are accurate, but they include CASH TRANSFERS: a
+    # $200 withdrawal reads exactly like a $200 trading loss, and a $300
+    # deposit reads like a gain. This block once reported
+    #     24 hours: -95.84%  ($208.70 -> $8.68)
+    # for an account that had simply had $200 withdrawn to pay a bill.
     #
-    # We therefore fetch the live account equity and compare. If the newest
-    # mark disagrees with live equity by more than PORTFOLIO_MARK_TOLERANCE,
-    # the series is not measuring account value, and every percentage derived
-    # from it would be fiction -- so we print live equity and suppress the
-    # windows rather than print a number we cannot stand behind.
+    # The windows below therefore use the profit_loss series, which is P/L
+    # only and excludes transfers. Live equity is shown so the headline
+    # number matches the account, rather than a stale session close.
     live_equity = None
     try:
         live_equity = float(api.get_account().equity)
@@ -23439,38 +23497,56 @@ def print_portfolio_gain_summary(force=False):
         logging.warning("[portfolio] could not read live equity (%s); "
                         "falling back to the history mark.", e)
 
-    marks_look_wrong = False
-    if live_equity is not None and live_equity > 0:
-        denom = max(abs(live_equity), 1e-9)
-        if abs(latest_equity - live_equity) / denom > PORTFOLIO_MARK_TOLERANCE:
-            marks_look_wrong = True
-            logging.warning(
-                "[portfolio] newest history mark $%.2f disagrees with live "
-                "equity $%.2f by more than %.0f%%. The series is probably "
-                "tracking buying power, not account value; suppressing the "
-                "gain/loss windows.", latest_equity, live_equity,
-                PORTFOLIO_MARK_TOLERANCE * 100)
-
     # Uses module-level GREEN / RED / DIM / RESET / pnl_color helpers.
     # Set env var _NO_COLOR=1 to disable coloring globally.
 
     def window_result(n_sessions, label):
-        """Return formatted line for 'past N trading sessions' comparison.
-        Positive gain rendered green, negative red."""
+        """Formatted line for the 'past N trading sessions' comparison.
+
+        Uses the profit_loss series so CASH TRANSFERS are excluded: a
+        withdrawal is not a loss and a deposit is not a gain. The percentage
+        is that P/L over the equity at the START of the window, which is the
+        return actually produced by trading.
+        """
         if len(ordered) <= n_sessions:
-            return f"  {label:<10}: {DIM}insufficient history ({len(ordered)-1} session(s) available){RESET}"
-        prior_date, prior_equity = ordered[-1 - n_sessions]
+            return (f"  {label:<10}: {DIM}insufficient history "
+                    f"({len(ordered)-1} session(s) available){RESET}")
+        prior_date, prior_equity, _ = ordered[-1 - n_sessions]
+
+        window = ordered[-n_sessions:]          # the sessions inside the window
+        pls = [pl for (_d, _eq, pl) in window if pl is not None]
+        if len(pls) == len(window) and window:
+            delta = sum(pls)
+            basis = "P/L, transfers excluded"
+        else:
+            # No usable profit_loss series. Fall back to the equity
+            # difference, but reconcile it against the trades this bot
+            # actually logged: operator rule -- if a balance change was not
+            # logged as a trade, it is a deposit or a withdrawal, not P/L.
+            raw_delta = latest_equity - prior_equity
+            traded = _logged_trade_pl(prior_date, latest_date)
+            if traded is None:
+                delta = raw_delta
+                basis = f"{DIM}equity delta — may include transfers{RESET}"
+            elif traded == 0.0 and abs(raw_delta) > 0.005:
+                # Balance moved but nothing was traded -> pure transfer.
+                return (f"  {label:<10}: {DIM}Alpaca logged no fills since "
+                        f"{prior_date}; the ${raw_delta:+,.2f} balance change "
+                        f"is a deposit/withdrawal, not P/L{RESET}")
+            else:
+                delta = traded
+                basis = "from Alpaca fills; unlogged change treated as a transfer"
+
         if prior_equity <= 0:
-            return f"  {label:<10}: prior equity was zero, cannot compute %"
-        pct = (latest_equity - prior_equity) / prior_equity * 100.0
-        delta = latest_equity - prior_equity
+            return (f"  {label:<10}: {DIM}prior equity was ${prior_equity:,.2f}; "
+                    f"cannot compute a %{RESET}")
+        pct = delta / prior_equity * 100.0
         color = pnl_color(delta)
-        arrow = "▲" if delta >= 0 else "▼"
+        arrow = "\u25b2" if delta >= 0 else "\u25bc"
         sign = "+" if delta >= 0 else ""
         return (f"  {label:<10}: {color}{arrow} {pct:+.2f}%{RESET}  "
-                f"{DIM}(${prior_equity:,.2f} on {prior_date} -> "
-                f"${latest_equity:,.2f} on {latest_date}, "
-                f"{color}{sign}${delta:,.2f}{RESET}{DIM}){RESET}")
+                f"{DIM}({color}{sign}${delta:,.2f}{RESET}{DIM} since {prior_date}, "
+                f"on a ${prior_equity:,.2f} base; {basis}){RESET}")
 
     # Render into a single string so future cached prints show the exact
     # same text. Includes a footer noting the freshness timestamp so it's
@@ -23489,14 +23565,10 @@ def print_portfolio_gain_summary(force=False):
         # Trading sessions (not calendar days) because holidays and
         # weekends have no equity marks -- "1 calendar day ago" on a
         # Monday would land on Sunday and have no data.
-        *([f"  {DIM}Gain/loss windows suppressed: the broker's history marks "
-           f"(newest ${latest_equity:,.2f} on {latest_date}) do not match live "
-           f"equity, so they are not measuring account value.{RESET}"]
-          if marks_look_wrong else
-          [window_result(1,  "24 hours"),
-           window_result(5,  "7 days"),
-           window_result(10, "14 days"),
-           window_result(21, "30 days")]),
+        window_result(1,  "24 hours"),
+        window_result(5,  "7 days"),
+        window_result(10, "14 days"),
+        window_result(21, "30 days"),
         f"  {DIM}Fetched at: {fetched_at_et}  (refetches at most 1/hour){RESET}",
         "============================================================================",
         "",
