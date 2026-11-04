@@ -30,7 +30,7 @@ Every buy order has to survive a committee. A timing brain scores it, a day-trad
 | | |
 |---|---|
 | **Broker** | Alpaca (paper or live) — market orders only, no resting limit orders |
-| **Universe** | A rotating quarter of the Nasdaq-100 — 25 symbols per session, full index every four days |
+| **Universe** | The full Nasdaq watchlist is scanned and ranked every cycle; only the **top 25** are eligible to buy |
 | **Buy window** | **10:30–11:30 AM ET only**, and only when the latched regime is bullish or sideways |
 | **Entry signal** | Chandelier Exit (22, 3) direction flip + MACD(12,26,9) histogram reversal off the trough, confirmed on the first reversing bar |
 | **Exit signal** | CE flip, MACD histogram climax, chandelier ATR trail, profit monitor giveback, round-trip rescue, hard stop |
@@ -198,7 +198,7 @@ The amber state matters: without it, a bearish day and a hung robot look identic
 
 **Regime is measured, not glanced at.** From **10:00 to 10:30 ET** the robot samples the SPY + VIX regime repeatedly and, at 10:30, latches the **majority verdict** for the rest of the session. A split decision breaks toward the more conservative regime. The latch is frozen — the robot cannot talk itself into buying at 11:15 because SPY twitched across its 20-day SMA.
 
-**A quarter of the Nasdaq at a time.** Each session scans **25 of the Nasdaq-100**, and the quarter rotates by trading day, so the full index is covered every four sessions. The slice is a stride (every 4th name alphabetically), not a contiguous block — a contiguous block would hand one day all the A-names and correlate the basket by sector far more than it appears to.
+**Wide scan, narrow buy list.** The whole universe is measured and scored every cycle — nothing is skipped — but only the **top 25** are eligible to be bought. Ranking uses the operator composite (relative dollar volume, 20-day momentum, market-cap proxy), z-scored across the candidates so no one factor's raw units dominate, and is applied *after* the liquidity and momentum filters so the 25 slots go to names that already qualify. A name ranked 26th is not bought even with a perfect setup, and the leaders will tend to recur day to day — that is what ranking does.
 
 The window is an **entry** gate only. Stops, the profit monitor, the chandelier trail, scale-outs, and the close sweeps are never gated by it — an open position can always leave, at any hour, in any regime. The check is enforced twice: once at the top of the buy cycle, and again immediately before `submit_order`, because a scan can run for minutes and the window can close underneath it.
 
@@ -394,8 +394,8 @@ The constants live near the top of the `.py` file; the dashboard-editable ones a
 | `PRIMARY_DEPLOYMENT_REGIMES` | `('bull','sideways')` | Regimes allowed to buy; everything else buys nothing |
 | `REGIME_SAMPLE_START_ET` | `10:00` | Regime sampling begins |
 | `REGIME_ASSESS_ET` | `10:30` | Majority verdict is latched for the session |
-| `NDX_QUARTER_MODE` | `armed` | `armed` = 25 Nasdaq-100 names/session, `off` = full 100 |
-| `NDX_QUARTER_COUNT` | `4` | Number of rotating slices |
+| `NDX_TOP_N_MODE` | `armed` | `armed` = only the top-ranked names may be bought, `off` = whole universe |
+| `NDX_TOP_N` | `25` | How many ranked names are eligible to buy |
 | `EARLY_MORNING_CUTOFF_ET` | `10:30` | When the early gate opens fully |
 | `EARLY_MORNING_MIN_DROP_PCT` | `0.02` | Required dislocation before the cutoff |
 | `BRAIN_B_MODE` / `BRAIN_B_MIN_SAFE` | `armed` / `0.40` | Risk brain veto and its threshold |

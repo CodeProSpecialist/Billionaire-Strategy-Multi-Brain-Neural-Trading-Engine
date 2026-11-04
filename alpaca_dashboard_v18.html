@@ -340,7 +340,7 @@ td.right, th.right { text-align: right; }
         <div class="k">Window</div><div class="v" id="pd-window">—</div>
         <div class="k">Regime</div><div class="v" id="pd-regime">—</div>
         <div class="k">Measured</div><div class="v" id="pd-sample">—</div>
-        <div class="k">NDX Quarter</div><div class="v" id="pd-quarter">—</div>
+        <div class="k">Buy List</div><div class="v" id="pd-quarter">—</div>
       </div>
       <div id="pd-reason" style="font-size:11px;color:var(--fg3);padding-top:6px;
            line-height:1.4"></div>
@@ -1743,9 +1743,9 @@ function renderPrimaryDeployment(p) {
                             : (p.state === 'sampling' ? 'measuring…' : 'not yet measured'),
       okCls);
   set('pd-sample', `${p.sample_window || '—'} · ${p.sample_count || 0} samples`, '');
-  set('pd-quarter', p.ndx_quarter
-        ? `${p.ndx_quarter} of ${p.ndx_quarter_of} · ${p.ndx_symbol_count} symbols`
-        : `full index · ${p.ndx_symbol_count || 0} symbols`, '');
+  set('pd-quarter', p.buy_top_n
+        ? `top ${p.buy_top_n} of ${p.universe_count} scanned`
+        : `all ${p.universe_count || 0} scanned`, '');
   const note = document.getElementById('pd-reason');
   if (note) note.textContent = p.reason || '';
 }

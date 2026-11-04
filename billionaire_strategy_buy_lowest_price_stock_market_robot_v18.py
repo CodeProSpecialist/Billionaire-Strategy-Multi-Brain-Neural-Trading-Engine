@@ -10367,6 +10367,10 @@ ONE_PER_DAY_RANK_MCAP   = 1.0       # weight on market-cap z-score
 UNIVERSE_NASDAQ_TECH_ONLY = True
 UNIVERSE_MIN_MARKET_CAP   = 2_000_000_000     # $2B -- mid cap floor
 _NASDAQ_TECH_UNIVERSE = [
+    # Mega-cap anchors (FAANG + friends). These were missing from the original
+    # list -- it was built from semiconductor and enterprise-software names, so
+    # the biggest and most liquid Nasdaq technology companies were absent.
+    'META','AMZN','GOOGL','GOOG','NFLX','TSLA',
     'AAPL','NVDA','MSFT','AVGO','MU','AMD','ASML','CSCO','AMAT','PANW','LRCX',
     'TXN','CRWD','ARM','KLAC','ADI','MRVL','QCOM','STX','WDC','FTNT','ADBE',
     'INTU','CDNS','SNPS','DDOG','NXPI','MPWR','ADSK','TER','MCHP','PAYX',
@@ -11292,50 +11296,84 @@ PLTR PANW PAYX PYPL PDD PEP QCOM REGN RKLB ROP ROST SNDK STX SHOP SPCX SBUX SNPS
 TTWO TER TSLA TXN TRI VRTX WMT WDC WDAY XEL
 """.split()
 
-# ---------------- Quarter-of-the-Nasdaq rotation ----------------
-# Operator rule: trade one QUARTER of the Nasdaq-100 at a time -- 25 symbols
-# per session -- rather than scanning all 100 every cycle. The quarter
-# ROTATES by trading day, so slice 0 runs today, slice 1 tomorrow, and the
-# whole index is covered every four sessions. Rotating (rather than always
-# re-ranking and taking the same top 25) is what keeps the bot from grinding
-# the same handful of mega-caps day after day.
+# ---------------- Top-25 tradable shortlist ----------------
+# Operator rule: the UNIVERSE stays whole -- every name is scanned and scored
+# every cycle -- but only the TOP 25 are eligible to be bought. The scan is
+# wide; the buy list is narrow.
 #
-# The slice is computed from the ET date so every thread, and a mid-session
-# restart, all land on the SAME 25 names for the day.
-NDX_QUARTER_MODE = 'armed'      # 'armed' = 25/session | 'off' = full 100
-NDX_QUARTER_COUNT = 4           # quarters -> 25 names each
+# This is a ranked shortlist, not a rotation. The full universe is measured,
+# ranked by the operator's composite (relative dollar volume, 20-day
+# momentum, market cap), and everything below rank 25 is dropped before any
+# setup is looked for. Two consequences worth being clear-eyed about:
+#   - The same leaders will tend to appear day after day. That is the point
+#     of ranking, but it does mean less name diversity than a rotation.
+#   - A name ranked 26th is not bought even with a perfect setup.
+NDX_TOP_N_MODE = 'armed'      # 'armed' = top 25 only | 'off' = whole universe
+NDX_TOP_N = 25                # how many of the ranked universe may be bought
 
 # Standing operator policy: never buy RNA/mRNA coronavirus-vaccine companies.
-# Filtered out of the Nasdaq-100 before the quarter is cut, so excluding them
-# never silently shrinks one quarter while leaving the others full size.
+# Filtered out before ranking, so an excluded name never occupies one of the
+# 25 shortlist slots.
 NDX_PERMANENT_EXCLUSIONS = {'MRNA'}
 
 
 def _ndx_tradable_universe():
-    """Nasdaq-100 with the permanently excluded names removed."""
+    """The playbook's Nasdaq universe with permanently excluded names removed."""
     return [s for s in PLAYBOOK_UNIVERSE_NDX
             if s.upper() not in NDX_PERMANENT_EXCLUSIONS]
 
 
-def ndx_quarter_for_date(now_et=None):
-    """(symbols, slice_index, n_slices) -- today's quarter of the Nasdaq-100.
+def ndx_scan_universe(now_et=None):
+    """(symbols, top_n_or_None) -- the full universe scanned each cycle.
 
-    With NDX_QUARTER_MODE != 'armed' this returns the whole index and a slice
-    index of None, so the caller's logging still reads correctly.
+    The shortlist is applied AFTER the daily context is fetched (see
+    _playbook_candidates), because ranking needs the dollar-volume and
+    momentum numbers that come with that fetch. This returns the whole
+    universe plus the shortlist size to apply later.
     """
     universe = _ndx_tradable_universe()
-    if NDX_QUARTER_MODE != 'armed' or NDX_QUARTER_COUNT < 2:
-        return universe, None, 1
-    now_et = now_et or datetime.now(eastern)
-    # toordinal() advances by one each calendar day; weekends simply mean some
-    # slices come up on days the market is shut, which costs nothing.
-    idx = now_et.date().toordinal() % NDX_QUARTER_COUNT
-    ordered = sorted(universe)
-    # Stride slicing (every 4th name) rather than contiguous blocks: a
-    # contiguous alphabetical block would hand one day all the A-names and
-    # another all the T-names, which correlates each day's basket by sector
-    # far more than it looks like it would.
-    return ordered[idx::NDX_QUARTER_COUNT], idx, NDX_QUARTER_COUNT
+    if NDX_TOP_N_MODE != 'armed' or NDX_TOP_N < 1:
+        return universe, None
+    return universe, NDX_TOP_N
+
+
+def rank_top_n(symbols, ctx, top_n):
+    """The top `top_n` of `symbols` by the operator's composite rank.
+
+    ctx maps symbol -> (prev_close, mom_20d, dollar_volume), as built by
+    _pb_daily_context_all. Each factor is z-scored across the candidates
+    present so no single factor's raw units dominate the sum, then weighted
+    by ONE_PER_DAY_RANK_* -- the same weights the composite ranker already
+    uses elsewhere, so the shortlist and the ranker agree on what "best"
+    means instead of each having its own opinion.
+
+    Market cap is not in ctx; 20-day dollar volume stands in for it. The two
+    correlate strongly across large-cap Nasdaq names, and dollar volume has
+    the advantage of being measured fresh each day rather than looked up.
+    """
+    present = [s for s in symbols if s in ctx]
+    if top_n is None or len(present) <= top_n:
+        return present
+
+    def _z(vals):
+        n = len(vals)
+        mean = sum(vals) / n
+        var = sum((v - mean) ** 2 for v in vals) / n
+        sd = var ** 0.5
+        if sd <= 0:
+            return [0.0] * n        # all identical -> factor contributes nothing
+        return [(v - mean) / sd for v in vals]
+
+    dvols = _z([float(ctx[s][2]) for s in present])
+    moms = _z([float(ctx[s][1]) for s in present])
+    scored = []
+    for i, s in enumerate(present):
+        score = (ONE_PER_DAY_RANK_VOLUME * dvols[i]
+                 + ONE_PER_DAY_RANK_MOM20 * moms[i]
+                 + ONE_PER_DAY_RANK_MCAP * dvols[i])
+        scored.append((score, s))
+    scored.sort(key=lambda t: (-t[0], t[1]))     # name breaks ties, so it is deterministic
+    return [s for _, s in scored[:top_n]]
 
 # ---------------- Portfolio-level liquidation (phase 2 of each sweep) ----------------
 # After phase 1 sells whatever individual positions are already profitable,
@@ -19344,18 +19382,25 @@ def _playbook_scan_candidates(regime):
     if setup == 'gap_reversal' and not (
             PRIMARY_DEPLOYMENT_START_ET <= now_et.time() < PRIMARY_DEPLOYMENT_END_ET):
         return []
+    _top_n = None
     if uni_key == 'all':
         universe = PLAYBOOK_UNIVERSE_ALL
     else:
-        universe, _q_idx, _q_n = ndx_quarter_for_date(now_et)
-        if _q_idx is not None:
-            print(f"[playbook] Nasdaq-100 quarter {_q_idx + 1}/{_q_n} today: "
-                  f"{len(universe)} symbols.")
+        universe, _top_n = ndx_scan_universe(now_et)
     api_syms = sorted({to_alpaca(s) for s in universe})
     ctx = _pb_daily_context_all(api_syms, now_et)
     liquid = [s for s in api_syms if s in ctx and ctx[s][2] >= PLAYBOOK_MIN_DOLLAR_VOLUME]
     if setup == 'dip_20d':
         liquid = [s for s in liquid if ctx[s][1] > MIN_20D_MOMENTUM_PCT]
+    # The whole universe is scanned and scored above; only the top N are
+    # eligible to be BOUGHT. Applied after the liquidity and momentum filters
+    # so the 25 slots go to names that already qualify, rather than being
+    # spent on high-volume names that the filters then throw away.
+    if _top_n is not None:
+        _before = len(liquid)
+        liquid = rank_top_n(liquid, ctx, _top_n)
+        print(f"[playbook] universe {len(api_syms)} scanned -> {_before} passed "
+              f"filters -> top {len(liquid)} eligible to buy.")
     hourly = _pb_hourly_bars_all(liquid, now_et)
     held = set(position_book.snapshot().keys())
     hits = []
@@ -24981,7 +25026,7 @@ class DashboardWSEngine:
         try:
             _pd = primary_deployment_status()
             _sample_state, _sample_regime, _sample_n = get_regime_sampling_status()
-            _q_syms, _q_idx, _q_n = ndx_quarter_for_date()
+            _scan_syms, _top_n = ndx_scan_universe()
             state['primary_deployment'] = {
                 'open': bool(_pd['open']),
                 'time_open': bool(_pd['time_open']),
@@ -24998,10 +25043,8 @@ class DashboardWSEngine:
                 'sample_window': "%s-%s ET" % (
                     REGIME_SAMPLE_START_ET.strftime('%H:%M'),
                     REGIME_ASSESS_ET.strftime('%H:%M')),
-                'ndx_quarter': (None if _q_idx is None else _q_idx + 1),
-                'ndx_quarter_of': _q_n,
-                'ndx_symbol_count': len(_q_syms),
-                'ndx_symbols': list(_q_syms),
+                'universe_count': len(_scan_syms),
+                'buy_top_n': _top_n,
             }
         except Exception as e:
             state['primary_deployment'] = {'error': str(e)}
@@ -25025,7 +25068,7 @@ class DashboardWSEngine:
                 'regime': _reg,
                 'setup': _rule[0] if (_rule and PLAYBOOK_ENABLED) else None,
                 'universe': (len(PLAYBOOK_UNIVERSE_ALL) if _rule and _rule[1] == 'all'
-                             else len(ndx_quarter_for_date()[0]) if _rule else 0),
+                             else len(ndx_scan_universe()[0]) if _rule else 0),
                 'stop_pct': _rule[2] if _rule else None,
                 'target_pct': _rule[3] if _rule else None,
                 'entries_today': _PB_DAY_COUNT.get((_today, _reg), 0),
