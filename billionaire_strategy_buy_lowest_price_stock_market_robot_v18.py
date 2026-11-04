@@ -16528,6 +16528,19 @@ _SCANNER_SP500_UNIVERSE = [
     'CDNS', 'CRWD', 'PANW', 'FTNT', 'DDOG', 'WDAY', 'ADSK', 'ARM',
     'TEAM', 'MDB', 'TTD', 'ANSS', 'MCHP', 'ON', 'ZS', 'GFS', 'SMCI',
     'PLTR', 'ORCL', 'CTSH', 'PYPL', 'ABNB', 'DASH', 'MELI',
+    # Widening pass: additional NASDAQ-100 / large-cap tech, semis, software
+    # and storage. Added so the scanner can supply the 25 candidates the buy
+    # pass is now willing to place. Every name here still has to clear the
+    # $2B market-cap floor, the excluded-sector filter, the blacklist and the
+    # full downstream gate chain -- this widens the INPUT, it does not
+    # loosen any test.
+    # NASDAQ-listed technology / computer names only: software, semis,
+    # storage, networking and internet infrastructure. NYSE listings
+    # (IBM, NOW, SNOW, NET, DELL, HPQ, HPE, JNPR, KEYS, TDY, TYL, EPAM)
+    # and non-computer "technology" such as solar (FSLR, ENPH) are
+    # deliberately left out.
+    'APP', 'VRSN', 'GEN', 'SWKS', 'MPWR', 'TER', 'STX', 'WDC', 'ZM', 'CDW',
+    'NTAP', 'AKAM', 'OKTA', 'PTC',
 ]
 _SCANNER_SP500_UNIVERSE_FULL_UNUSED = [
     'MMM', 'AOS', 'ABT', 'ABBV', 'ACN', 'ADBE', 'AMD', 'AES', 'AFL', 'A', 'APD', 'ABNB', 'AKAM', 'ALB', 'ARE',
@@ -17037,6 +17050,24 @@ def run_stock_scanner(show_progress=False):
              .groupby('sector', group_keys=False)
              .head(25))
     top = top[~top['sector'].isin(_SCANNER_EXCLUDED_SECTORS)]
+
+    # Operator rule: never surface blacklisted names (the permanent seed is
+    # the RNA coronavirus-vaccine makers). The buy path already refuses them,
+    # but filtering here too means a blacklisted symbol cannot occupy one of
+    # the limited candidate slots and crowd out a name we could actually buy.
+    try:
+        _bl_before = len(top)
+        top = top[~top['symbol'].astype(str).str.upper().map(
+            lambda s: BLACKLIST.is_blocked(to_yf(s))[0]
+            if hasattr(BLACKLIST, 'is_blocked') else False)]
+        _bl_dropped = _bl_before - len(top)
+        if _bl_dropped:
+            logging.info("scanner: dropped %d blacklisted name(s) before "
+                         "ranking", _bl_dropped)
+    except Exception as _ble:
+        logging.warning("scanner: blacklist filter skipped (%s); the buy path "
+                        "still enforces it", _ble)
+
     top = top.nlargest(_SCANNER_CONFIG['chart_top_n'], 'score')
     result = [to_yf(str(s)) for s in top['symbol'].tolist()]
 
