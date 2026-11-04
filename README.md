@@ -31,7 +31,8 @@ Every buy order has to survive a committee. A timing brain scores it, a day-trad
 |---|---|
 | **Broker** | Alpaca (paper or live) — market orders only, no resting limit orders |
 | **Universe** | 82 technology, computer and consumer-electronics brands (NASDAQ + NYSE), mid cap and up — scanned and ranked every cycle, **top 25** eligible to buy |
-| **Buy window** | **10:30–11:30 AM ET only**, and only when the latched regime is bullish or sideways |
+| **Buy window** | **10:30–11:30 AM Eastern only**, and only when the latched regime is bullish or sideways |
+| **Entries** | Up to **25 positions in a single pass**, cash split equally, on both bull and sideways days |
 | **Entry signal** | Chandelier Exit (22, 3) direction flip + MACD(12,26,9) histogram reversal off the trough, confirmed on the first reversing bar |
 | **Exit signal** | CE flip, MACD histogram climax, chandelier ATR trail, profit monitor giveback, round-trip rescue, hard stop |
 | **Hold time** | Minutes, not days — most winners are 5-minute moves; a runner is allowed up to an hour while RSI stays elevated |
@@ -397,6 +398,7 @@ The constants live near the top of the `.py` file; the dashboard-editable ones a
 | `REGIME_SAMPLE_START_ET` | `10:00` | Regime sampling begins |
 | `REGIME_ASSESS_ET` | `10:30` | Majority verdict is latched for the session |
 | `PLAYBOOK_NDX_UNIVERSE_SOURCE` | `tech` | `tech` = 82 tech+electronics names, `ndx100` = full Nasdaq-100 |
+| `DAILY_MAX_POSITIONS` | `25` | Positions per day on a tradable (bull or sideways) day |
 | `NDX_TOP_N_MODE` | `armed` | `armed` = only the top-ranked names may be bought, `off` = whole universe |
 | `NDX_TOP_N` | `25` | How many ranked names are eligible to buy |
 | `EARLY_MORNING_CUTOFF_ET` | `10:30` | When the early gate opens fully |

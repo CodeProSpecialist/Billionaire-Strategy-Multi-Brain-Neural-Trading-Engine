@@ -10318,7 +10318,7 @@ KELLY_SCALE = 1.0 / 3.0          # fraction of classic Kelly actually used
 MAX_CASH_FRACTION_PER_ORDER = 1.0 / 25.0
 # Operator rule: place up to 25 buy orders SIMULTANEOUSLY during the buying
 # window rather than dribbling them out over successive cycles. This must
-# be >= DAILY_MAX_POSITIONS_NON_BULL or the day's allowance cannot be
+# be >= DAILY_MAX_POSITIONS or the day's allowance cannot be
 # filled in a single pass.
 MAX_NEW_POSITIONS_PER_CYCLE = 25  # rank all qualifying candidates, only buy the top N (review item #9)
 
@@ -10351,11 +10351,12 @@ ONE_PER_DAY_MAX         = 1         # positions per trading day WHEN armed
                                     # (the configured value; the regime-driven
                                     #  ceiling below overrides it when armed)
 
-# Operator rule: on sideways/neutral days we may hold up to 25 positions,
-# with cash split equally between them, rather than concentrating the day in
-# a single name. bear/panic never place a buy at all (check_regime_buy_window
-# ends the cycle), so in practice this ceiling governs sideways days.
-DAILY_MAX_POSITIONS_NON_BULL = 25
+# Operator rule (2026-11-04): on any tradable day -- bull or sideways -- the
+# robot buys the TOP 25 in a single pass, with cash split equally between
+# them. bear/panic never place a buy at all (check_regime_buy_window ends the
+# cycle), so in practice this ceiling governs bull and sideways days.
+DAILY_MAX_POSITIONS = 25
+DAILY_MAX_POSITIONS_NON_BULL = DAILY_MAX_POSITIONS   # back-compat alias
 
 # The composite ranker is INDEPENDENT of the daily cap -- which candidate
 # ranks highest still matters when several are bought in a cycle.
@@ -10426,9 +10427,12 @@ def one_per_day_effective_mode():
     blocks the whole cycle -- so the cap is a second line of defence there,
     not the primary one.
 
-    This OVERRIDES the configured ONE_PER_DAY_MODE in both directions: a bull
-    day is uncapped even if ONE_PER_DAY_MODE is 'armed', and a sideways day is
-    capped even though it is 'off'. The configured value is used only before
+    This OVERRIDES the configured ONE_PER_DAY_MODE. Operator rule
+    (2026-11-04): BOTH tradable regimes buy the top 25 in a single pass
+    inside the 10:30-11:30 ET window, so both are capped at
+    DAILY_MAX_POSITIONS (25) for the day. Bull used to be uncapped, which
+    meant a bull day could re-fill 25 slots on every cycle of the hour and
+    run far past 25 positions. The configured value is used only before
     10:30 ET, when no regime is latched yet and nothing may be bought anyway,
     and as the fallback if the regime lookup fails.
     """
@@ -10440,9 +10444,7 @@ def one_per_day_effective_mode():
         return ONE_PER_DAY_MODE
     if regime is None:
         return ONE_PER_DAY_MODE          # pre-10:30; no buying happens anyway
-    if regime == REGIME_BULL:
-        return 'off'                     # bull days are never capped
-    return 'armed'                       # sideways / bear / panic / unknown
+    return 'armed'                       # bull / sideways / bear / panic / unknown
 
 
 def _count_todays_db_buys(today_iso):
@@ -10496,11 +10498,10 @@ def _one_per_day_roll_day_locked(today):
 def one_per_day_max_positions():
     """How many positions may be opened today, under the effective mode.
 
-    Operator rule: a sideways/neutral day allows up to
-    DAILY_MAX_POSITIONS_NON_BULL (25) positions with cash split equally
-    between them -- not all the eggs in one basket, but still a hard daily
-    ceiling. Bull days are uncapped (one_per_day_effective_mode returns
-    'off', so this is never consulted).
+    Operator rule (2026-11-04): a BULL or SIDEWAYS day allows up to
+    DAILY_MAX_POSITIONS (25) positions with cash split equally between them
+    -- the top 25, bought in a single pass inside the primary deployment
+    hour.
 
     Falls back to the configured ONE_PER_DAY_MAX if the regime cannot be
     read, which is the conservative direction.
@@ -10509,9 +10510,9 @@ def one_per_day_max_positions():
         regime = get_latched_session_regime()
     except Exception:
         return ONE_PER_DAY_MAX
-    if regime is None or regime == REGIME_BULL:
+    if regime is None:
         return ONE_PER_DAY_MAX
-    return int(DAILY_MAX_POSITIONS_NON_BULL)
+    return int(DAILY_MAX_POSITIONS)
 
 
 def one_per_day_slots_left():
@@ -10584,7 +10585,7 @@ EARLY_MORNING_GATE_MODE = 'armed'           # 'armed' | 'shadow' | 'off'
 #   sideways  -> buys allowed 10:30 ET .. 11:15 ET, ONLY upward-momentum
 #                dips (the momentum gate runs STRICT: no shadow pass-
 #                through, no fail-open on missing data), and AT MOST ONE
-#                at most DAILY_MAX_POSITIONS_NON_BULL (25) positions for
+#                at most DAILY_MAX_POSITIONS (25) positions for
 #                the day, with cash split equally between them (see
 #                one_per_day_effective_mode / MAX_CASH_FRACTION_PER_ORDER)
 #   bear      -> no buys at all; "market is not profitable today"
@@ -10925,8 +10926,10 @@ BULL_MAX_MONITOR_DRAWDOWN = 0.005          # max intra-window drawdown allowed  
 BULL_MACD_SIGNAL_MIN = 0.15                # MACD signal line must exceed this
 BULL_RSI_MIN = 70.0                        # daily RSI(14) must exceed this
 BULL_VOLUME_MULT_OF_MEAN = 0.85            # today's volume > this x 90d mean
-BULL_BUY_WINDOW_START = (10, 2)            # (hour, minute) ET
-BULL_BUY_WINDOW_END = (15, 35)             # (hour, minute) ET
+# Aligned with the primary deployment hour (10:30-11:30 ET). Was 10:02-15:35,
+# which no longer matched the hard window every buy order must pass anyway.
+BULL_BUY_WINDOW_START = (10, 30)           # (hour, minute) ET
+BULL_BUY_WINDOW_END = (11, 30)             # (hour, minute) ET
 BULL_TAKE_PROFIT_PCT = 1.005               # +0.5% flat sell target
 BULL_TRAIL_PERCENT = 1.0                   # 1% broker-side trailing stop
 BULL_MAX_ALLOCATION_PER_SYMBOL = 600.0     # per-symbol cash cap for bull buys
@@ -11267,7 +11270,7 @@ PLAYBOOK_BEAR_SIZE_MULT = 1.0          # bear had few recent trades; lower to 0.
 PLAYBOOK_MIN_DOLLAR_VOLUME = 20_000_000  # 20-day average daily $ volume (full-market SIP bars)
 PLAYBOOK_BATCH_SIZE = 200              # symbols per Alpaca data request
 PLAYBOOK_RULES = {   # regime -> (setup, universe, stop_pct, target_pct, max entries per day)
-    'sideways': ('dip_20d',      'ndx', 0.02, 0.03, 15),
+    'sideways': ('dip_20d',      'ndx', 0.02, 0.03, 25),   # 25 in one pass (operator, 2026-11-04)
     'bear':     ('gap_reversal', 'all', 0.02, 0.03, 5),
 }
 
@@ -20233,8 +20236,18 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
     playbook_candidates = []
     if PLAYBOOK_ENABLED:
         playbook_candidates = _playbook_scan_candidates(regime)
-        if PLAYBOOK_REPLACES_OLD_STRATEGIES:
+        # The playbook only has a setup for the regimes in PLAYBOOK_RULES.
+        # Wiping the old candidate list for a regime the playbook does NOT
+        # cover left that regime with no candidates from any path at all --
+        # which is exactly what happened on BULL days: no 'bull' rule, the
+        # list wiped, and the bull-v8 scan guards on an empty list, so a bull
+        # day produced zero fills. Only hand the cycle over to the playbook
+        # for regimes it actually has a setup for.
+        if PLAYBOOK_REPLACES_OLD_STRATEGIES and regime in PLAYBOOK_RULES:
             symbols_to_buy_list = []   # skip the old dip-score and bull-v8 scans
+        elif PLAYBOOK_REPLACES_OLD_STRATEGIES:
+            print(f"  [playbook] no setup for {str(regime).upper()} -- running the "
+                  f"bull-v8 / dip-score path instead of skipping the cycle.")
 
     # ---------------- Bull-market strategy candidates (regime-gated) ----------------
     # These come from the ported Bull Market Advanced Stock Market Trading
