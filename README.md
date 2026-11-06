@@ -184,19 +184,41 @@ The heart of the UI, and the tile that mirrors a TradingView layout. Each owned 
 
 ### Primary Deployment One Hour Buy Window
 
-The one tile that answers "why isn't it buying?" at a glance. Orders are placed **only** between **10:30 and 11:30 AM Eastern**, and only when the day's latched regime is bullish or sideways — a bearish, panicked, or unmeasurable regime buys nothing at all. **If the robot doesn't buy during that one hour, it does not buy at all that day** — there is no later window and no catch-up.
+The one tile that answers "why isn't it buying?" at a glance. Orders are placed **only** between **10:30 and 11:30 AM Eastern**, and only when the day's latched regime is bullish or sideways — a bearish, panicked, or unmeasurable regime buys nothing at all unless the operator explicitly unblocks it for that day (see below). **If the robot doesn't buy during that one hour, it does not buy at all that day** — there is no later window and no catch-up.
 
 ![Primary deployment buy window](docs/images/primary_deployment_window.png)
 
-The lamp has three states on purpose:
+The lamp has four states on purpose:
 
 | Lamp | Meaning |
 |---|---|
 | 🟢 **BUY WINDOW OPEN** | Inside the hour *and* the regime permits — an order can be placed right now |
 | 🟠 **WINDOW OPEN — REGIME BLOCKED** | The hour is running, but the regime vetoed the day |
+| 🔵 **BUY WINDOW OPEN — REGIME OVERRIDDEN** | The hour is running and the regime vetoed it, but the operator waived the veto for today |
 | ⚪ **WAITING / CLOSED / MEASURING** | Outside the hour, or sampling the regime ahead of it |
 
-The amber state matters: without it, a bearish day and a hung robot look identical from across the room.
+The amber state matters: without it, a bearish day and a hung robot look identical from across the room. The blue state matters for the same reason in reverse — an overridden bear day must never be mistaken for a regime the robot actually liked.
+
+#### Unblocking the regime for one day
+
+When the regime blocks the day, the tile offers a way out. The button reads **Unblock Regime Today**, and the tile turns amber to show the hour is running with nothing allowed to fire:
+
+![Primary deployment window, regime blocked](docs/images/primary_deployment_window_blocked.png)
+
+Pressing it (behind a confirmation prompt that names the day's regime) waives the regime veto and lets the robot buy the top-ranked names during the deployment hour. The lamp turns blue, the tag reads `OVERRIDE`, and the button flips to **Re-block Regime**:
+
+![Primary deployment window, regime overridden](docs/images/primary_deployment_window_override.png)
+
+The override is deliberately narrow:
+
+- It waives **only** the regime test. The 10:30–11:30 ET window still governs completely — arming it at 09:45 or at noon buys nothing.
+- It is keyed by **Eastern date** and expires on its own at the date roll. There is no way to leave it armed overnight by forgetting about it.
+- The trade governor, the blacklists, the exposure caps, the per-symbol brains and **every exit path** are untouched.
+- Each press is logged at `WARNING` and posted to the Brain Trading Floor as a `USER` instruction, so the days you overrode are on the record.
+
+Button state is driven by the server snapshot on every tick rather than by local browser state, so a page reload or a second browser tab always shows the real latch. When the regime already permits buying, the button greys out — there is nothing to unblock.
+
+> **This removes a safety gate.** A bearish or panicked regime is precisely the condition the window was built to sit out. Treat the override as an occasional deliberate act, not a routine one.
 
 **Regime is measured, not glanced at.** From **10:00 to 10:30 ET** the robot samples the SPY + VIX regime repeatedly and, at 10:30, latches the **majority verdict** for the rest of the session. A split decision breaks toward the more conservative regime. The latch is frozen — the robot cannot talk itself into buying at 11:15 because SPY twitched across its 20-day SMA.
 
