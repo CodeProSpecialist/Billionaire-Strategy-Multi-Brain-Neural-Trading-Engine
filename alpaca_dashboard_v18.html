@@ -181,6 +181,50 @@ td.right, th.right { text-align: right; }
 .tgl input:checked + .track:before { transform: translateX(20px); background: #000; }
 .tgl input:focus-visible + .track { border-color: var(--accent); }
 
+/* Bear-market warning overlay (gates the Unblock Regime control) */
+.ovl {
+  position: fixed; inset: 0; z-index: 9000; display: none;
+  align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.72); backdrop-filter: blur(2px);
+  padding: 16px;
+}
+.ovl.on { display: flex; }
+.ovl-box {
+  background: var(--bg2, #161b22); border: 2px solid var(--red);
+  border-radius: 10px; max-width: 480px; width: 100%;
+  max-height: 94vh; overflow-y: auto;
+  padding: 18px 20px 16px 20px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+}
+.ovl-sign {
+  /* Operator asked for a 3-4 inch stop sign. Drawn as inline SVG rather than
+     the 🛑 emoji on purpose: emoji advance width varies by platform font (the
+     same font-size measured 4.37in wide under Noto Color Emoji), so a font
+     size cannot pin a real-world width. An SVG at an explicit width is exact
+     and stays crisp at this scale, where a scaled-up emoji bitmap would not.
+     CSS defines 1in as exactly 96px, so 3.5in is 336px of layout -- on a
+     scaled or high-DPI display that is not a physical ruler inch, but it is
+     the only inch CSS has. min() keeps it inside a narrow phone viewport. */
+  width: min(3.5in, 70vw);
+  margin: 0 auto 12px auto;
+  display: block;
+}
+.ovl-sign svg { width: 100%; height: auto; display: block; }
+.ovl-hd {
+  text-align: center; color: var(--red); font-weight: 700; font-size: 12px;
+  letter-spacing: 0.08em; text-transform: uppercase; padding-bottom: 10px;
+}
+.ovl-msg {
+  color: var(--fg); font-size: 14px; line-height: 1.55; text-align: center;
+  padding-bottom: 10px;
+}
+.ovl-sub {
+  color: var(--fg3); font-size: 11px; line-height: 1.45; text-align: left;
+  border-top: 1px solid var(--border); padding-top: 10px; margin-bottom: 14px;
+}
+.ovl-row { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.ovl-row .btn { min-width: 132px; justify-content: center; }
+
 .section-div {
   margin: 10px 0 4px 0; padding-bottom: 2px;
   border-bottom: 1px solid var(--border);
@@ -358,13 +402,22 @@ td.right, th.right { text-align: right; }
         <div id="pd-brkb-note" style="font-size:10px;color:var(--fg3);
              padding-top:5px;line-height:1.4"></div>
       </div>
-      <div class="btn-row" style="padding-top:10px;border-top:1px solid var(--border);
-           margin-top:8px">
-        <button class="btn btn-sm btn-amber" id="pd-override-btn"
-                onclick="togglePdOverride()">Unblock Regime Today</button>
+      <div id="pd-override-row" style="display:none">
+        <div class="btn-row" style="padding-top:10px;border-top:1px solid var(--border);
+             margin-top:8px">
+          <button class="btn btn-sm btn-amber" id="pd-override-btn"
+                  onclick="togglePdOverride()">Unblock Regime Today</button>
+        </div>
+        <div id="pd-override-note" style="font-size:10px;color:var(--fg3);
+             padding-top:6px;line-height:1.4"></div>
       </div>
-      <div id="pd-override-note" style="font-size:10px;color:var(--fg3);
-           padding-top:6px;line-height:1.4"></div>
+      <div id="pd-override-hidden-note" style="font-size:10px;color:var(--fg3);
+           padding-top:8px;margin-top:8px;border-top:1px solid var(--border);
+           line-height:1.4">
+        🛑 The regime override control is hidden. Enable
+        <em>Show &ldquo;Unblock Regime Today&rdquo; button</em> in Settings to
+        reveal it.
+      </div>
     </div>
   </div>
 
@@ -1138,6 +1191,21 @@ td.right, th.right { text-align: right; }
             onchange="markDirty('persymbol_min_trades', parseInt(this.value))">
         </div>
 
+        <div class="section-div"><h3>🛑 Operator Override</h3></div>
+        <div class="inp-row">
+          <label>Show &ldquo;Unblock Regime Today&rdquo; button</label>
+          <label class="tgl" title="Reveals the regime-override button on the PRIMARY DEPLOYMENT tile. The button waives the bull/sideways regime test for one day, which is a safety gate — so turning this on, and pressing the button afterwards, each require confirming a bear-market warning. Browser-local: it changes nothing on the robot and is not sent to the server.">
+            <input type="checkbox" id="sPdOverrideVisible"
+              onchange="onPdOverrideVisibilityToggle(this)">
+            <span class="track"></span>
+          </label>
+        </div>
+        <div style="font-size:10px;color:var(--fg3);padding:2px 0 8px 0;line-height:1.4">
+          Hidden by default so the override cannot be pressed by accident. This
+          switch is stored in this browser only &mdash; it is not a robot setting
+          and is never sent to the server.
+        </div>
+
         <div class="section-div"><h3>📘 Regime Playbook</h3></div>
         <div class="inp-row">
           <label>Use 1-year playbook</label>
@@ -1210,6 +1278,36 @@ td.right, th.right { text-align: right; }
 </div>
 
 <div class="footer" id="footer">Last update: never</div>
+
+<div class="ovl" id="bearWarnOvl" role="dialog" aria-modal="true"
+     aria-labelledby="bearWarnMsg">
+  <div class="ovl-box">
+    <div class="ovl-sign" role="img" aria-label="Stop">
+      <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+        <!-- Regulatory octagon: white border ring, red face, STOP legend. -->
+        <polygon points="29.3,2 70.7,2 98,29.3 98,70.7 70.7,98 29.3,98 2,70.7 2,29.3"
+                 fill="#ffffff"/>
+        <polygon points="30.9,8 69.1,8 92,30.9 92,69.1 69.1,92 30.9,92 8,69.1 8,30.9"
+                 fill="#d41818"/>
+        <text x="50" y="50" fill="#ffffff" text-anchor="middle"
+              dominant-baseline="central" font-family="Helvetica, Arial, sans-serif"
+              font-weight="700" font-size="27" letter-spacing="1.5">STOP</text>
+      </svg>
+    </div>
+    <div class="ovl-hd" id="bearWarnHd">Stop</div>
+    <div class="ovl-msg" id="bearWarnMsg">
+      Stop to think because Bear Market means No Profit is going to be made in
+      the market today in general. Do you still want to proceed?
+    </div>
+    <div class="ovl-sub" id="bearWarnSub"></div>
+    <div class="ovl-row">
+      <button class="btn btn-sm btn-red" id="bearWarnYes"
+              onclick="bearWarnAnswer(true)">Yes, proceed</button>
+      <button class="btn btn-sm" id="bearWarnNo"
+              onclick="bearWarnAnswer(false)">No, cancel</button>
+    </div>
+  </div>
+</div>
 
 <script>
 // ────────────────────────────────────────────────────────────────────────
@@ -1862,22 +1960,107 @@ function renderPrimaryDeployment(p) {
 // Mirrors the server latch; set on every snapshot by renderPrimaryDeployment.
 let _pdOverrideOn = false;
 
+// ═══ Regime-override visibility + bear-market warning ════════════════
+// The Unblock Regime button waives a safety gate, so it is hidden until the
+// operator deliberately reveals it, and BOTH the reveal and every press have
+// to pass the same red-stop-sign warning. The visibility flag is browser-local
+// on purpose: it is a guard rail on this screen, not a robot setting, so it is
+// never sent to the server and cannot change how the robot trades.
+const PD_OVERRIDE_VIS_KEY = 'pdOverrideBtnVisible';
+let _pdOverrideBtnVisible = false;
+
+function pdOverrideVisStored() {
+  try { return localStorage.getItem(PD_OVERRIDE_VIS_KEY) === '1'; }
+  catch (e) { return false; }   // private mode / storage disabled -> stay hidden
+}
+
+function pdOverrideVisStore(on) {
+  try {
+    if (on) localStorage.setItem(PD_OVERRIDE_VIS_KEY, '1');
+    else localStorage.removeItem(PD_OVERRIDE_VIS_KEY);
+  } catch (e) {}
+}
+
+function applyPdOverrideVisibility() {
+  const row = document.getElementById('pd-override-row');
+  const hid = document.getElementById('pd-override-hidden-note');
+  if (row) row.style.display = _pdOverrideBtnVisible ? '' : 'none';
+  if (hid) hid.style.display = _pdOverrideBtnVisible ? 'none' : '';
+  const cb = document.getElementById('sPdOverrideVisible');
+  if (cb) cb.checked = !!_pdOverrideBtnVisible;
+}
+
+// ---- the warning dialog ----
+// One dialog, two callers. Resolves exactly once: a stray second click on
+// either button after the overlay closes cannot fire the callback again.
+let _bearWarnCb = null;
+
+function showBearWarning(heading, subtext, onYes) {
+  const ovl = document.getElementById('bearWarnOvl');
+  if (!ovl) { if (onYes) onYes(); return; }   // no overlay -> do not silently block
+  const hd = document.getElementById('bearWarnHd');
+  const sub = document.getElementById('bearWarnSub');
+  if (hd) hd.textContent = heading || 'Stop';
+  if (sub) sub.textContent = subtext || '';
+  _bearWarnCb = onYes || null;
+  ovl.classList.add('on');
+  const no = document.getElementById('bearWarnNo');
+  if (no) try { no.focus(); } catch (e) {}   // default to the safe button
+}
+
+function bearWarnAnswer(yes) {
+  const ovl = document.getElementById('bearWarnOvl');
+  if (ovl) ovl.classList.remove('on');
+  const cb = _bearWarnCb;
+  _bearWarnCb = null;
+  if (yes && cb) cb();
+}
+
+// Escape cancels, same as "No, cancel".
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && _bearWarnCb) bearWarnAnswer(false);
+});
+
+// ---- Settings toggle ----
+function onPdOverrideVisibilityToggle(cb) {
+  if (!cb.checked) {                     // hiding needs no warning
+    _pdOverrideBtnVisible = false;
+    pdOverrideVisStore(false);
+    applyPdOverrideVisibility();
+    return;
+  }
+  // Turning it ON: revert the switch immediately so the warning, not the
+  // click, is what reveals the button. A cancel leaves it visibly off.
+  cb.checked = false;
+  const reg = (document.getElementById('pd-regime') || {}).textContent || '';
+  showBearWarning(
+    'Reveal the regime override control?',
+    'Today\u2019s regime reads ' + (reg.trim() || 'unmeasured') + '. Revealing '
+    + 'the button does not unblock anything by itself \u2014 you still have to '
+    + 'press it, and it will ask again. The 10:30\u201311:30 ET window, the '
+    + 'governor, the blacklists and every exit path stay in force either way.',
+    () => {
+      _pdOverrideBtnVisible = true;
+      pdOverrideVisStore(true);
+      applyPdOverrideVisibility();
+    });
+}
+
 function togglePdOverride() {
   if (_pdOverrideOn) {
-    send({type: 'pd_regime_override', on: false});
+    send({type: 'pd_regime_override', on: false});   // re-blocking is always safe
     return;
   }
   const el = document.getElementById('pd-regime');
   const reg = el ? el.textContent.trim() : 'the current';
-  const ok = confirm(
-    'Unblock the regime gate for TODAY only?\n\n'
-    + 'Today\'s regime (' + reg + ') is blocking new entries. Unblocking lets '
-    + 'the robot place buys on the top-ranked names during the 10:30-11:30 ET '
-    + 'primary deployment window.\n\n'
-    + 'The buy window itself is NOT moved, and stops, the governor and the '
-    + 'blacklist all stay in force. The override clears itself at the ET date '
-    + 'roll.\n\nProceed?');
-  if (ok) send({type: 'pd_regime_override', on: true});
+  showBearWarning(
+    'Unblock the regime gate for today only?',
+    'Today\u2019s regime (' + reg + ') is blocking new entries. Unblocking lets '
+    + 'the robot place buys on the top-ranked names during the 10:30\u201311:30 ET '
+    + 'primary deployment window. The buy window itself is NOT moved, and stops, '
+    + 'the governor and the blacklist all stay in force. The override clears '
+    + 'itself at the ET date roll.',
+    () => send({type: 'pd_regime_override', on: true}));
 }
 
 function renderRegime(r) {
@@ -3086,6 +3269,13 @@ function renderIntel(intel) {
 }
 
 function renderSettings(s) {
+  // Browser-local, so it is never read from the snapshot -- just kept in sync
+  // with the row it controls. Skipped while focused so a click is not undone.
+  try {
+    const _pv = document.getElementById('sPdOverrideVisible');
+    if (_pv && document.activeElement !== _pv) _pv.checked = !!_pdOverrideBtnVisible;
+  } catch (e) {}
+
   try {
     const _vb = document.getElementById('brVerbose');
     if (_vb && s && s.v18_floor_verbose !== undefined && document.activeElement !== _vb)
@@ -3179,6 +3369,8 @@ function renderFlags(f) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  _pdOverrideBtnVisible = pdOverrideVisStored();
+  applyPdOverrideVisibility();
   const inp = document.getElementById('floorInput');
   if (inp) inp.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowUp') { e.preventDefault();

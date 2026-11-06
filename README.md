@@ -21,6 +21,7 @@ Every buy order has to survive a committee. A timing brain scores it, a day-trad
 - [The dashboard, tile by tile](#-the-dashboard-tile-by-tile)
   - [Primary Deployment One Hour Buy Window](#primary-deployment-one-hour-buy-window)
   - [Override-day BRK.B deployment sleeve](#override-day-brkb-deployment-sleeve)
+  - [The override is hidden by default](#the-override-is-hidden-by-default)
 - [The features that actually move the needle](#-the-features-that-actually-move-the-needle)
 - [Configuration reference](#-configuration-reference)
 - [Troubleshooting](#-troubleshooting)
@@ -208,7 +209,7 @@ When the regime blocks the day, the tile offers a way out. The button reads **Un
 
 ![Primary deployment window, regime blocked](docs/images/primary_deployment_window_blocked.png)
 
-Pressing it (behind a confirmation prompt that names the day's regime) waives the regime veto and lets the robot buy the top-ranked names during the deployment hour. The lamp turns blue, the tag reads `OVERRIDE`, and the button flips to **Re-block Regime**:
+The button is hidden until a Settings switch reveals it — see [The override is hidden by default](#the-override-is-hidden-by-default). Once visible, pressing it (behind a red stop-sign warning that names the day's regime) waives the regime veto and lets the robot buy the top-ranked names during the deployment hour. The lamp turns blue, the tag reads `OVERRIDE`, and the button flips to **Re-block Regime**:
 
 ![Primary deployment window, regime overridden](docs/images/primary_deployment_window_override.png)
 
@@ -218,6 +219,7 @@ The override is deliberately narrow:
 - It is keyed by **Eastern date** and expires on its own at the date roll. There is no way to leave it armed overnight by forgetting about it.
 - The trade governor, the blacklists, the exposure caps, the per-symbol brains and **every exit path** are untouched.
 - Each press is logged at `WARNING` and posted to the Brain Trading Floor as a `USER` instruction, so the days you overrode are on the record.
+- The control is **hidden by default**, and both revealing it and pressing it require clearing a red stop-sign warning.
 
 Button state is driven by the server snapshot on every tick rather than by local browser state, so a page reload or a second browser tab always shows the real latch. When the regime already permits buying, the button greys out — there is nothing to unblock.
 
@@ -303,6 +305,34 @@ Everything else still applies to the BRK.B order: the blacklist, the trade gover
 Budgets track **real fills**, not estimates: every fill is booked against its sleeve, and each shortlist order re-reads its remaining headroom immediately before submit, so earlier orders in the same pass cannot overspend the half.
 
 > **Buying power is not equity.** The BRK.B leg is 50% of `buying_power`, which on a margin account is larger than account value — while the top-25 leg is 50% of equity. That asymmetry is intentional, but it means the two legs are struck from different numbers. Change `BRKB_OVERRIDE_BP_FRACTION`'s source in `brkb_override_plan` if you would rather both halves came off equity.
+
+#### The override is hidden by default
+
+The button is a safety gate with a switch on it, so it is not on screen until you deliberately put it there. Out of the box the tile shows only a note:
+
+> 🛑 The regime override control is hidden. Enable *Show "Unblock Regime Today" button* in Settings to reveal it.
+
+Settings → **🛑 Operator Override** carries the sliding switch that reveals it. There are then **two** confirmations between a fresh browser and an unblocked bear day, and they are the same dialog both times — a 3.5-inch red stop sign over:
+
+> **Stop to think because Bear Market means No Profit is going to be made in the market today in general. Do you still want to proceed?**
+
+…with **Yes, proceed** and **No, cancel**.
+
+| Action | Warning? | Effect of "Yes" |
+|---|---|---|
+| Flipping the Settings switch **on** | 🛑 yes | The button appears. **Nothing is unblocked** — the robot's behaviour is unchanged |
+| Pressing **Unblock Regime Today** | 🛑 yes | The regime veto is waived for today's ET date |
+| Pressing **Re-block Regime** | no | Re-arming a safety gate is always allowed straight through |
+| Flipping the Settings switch **off** | no | The button disappears. An override already armed **stays armed** — hiding the button is not the same as re-blocking |
+
+Details worth knowing:
+
+- Cancelling leaves the switch visibly **off**. The switch reverts the instant you click it and only moves once the warning is answered, so it can never show "on" over a hidden button.
+- **Escape** is the same as *No, cancel*.
+- The visibility choice is stored in **that browser only** (`localStorage`). It is never sent to the server, is not a robot setting, and does not appear in the Settings save batch — so revealing the button on your laptop does not reveal it on the machine running the robot, and a browser with storage disabled simply stays hidden.
+- The stop sign is drawn as inline **SVG**, not the 🛑 emoji, because emoji width varies by platform font and could not be pinned to a real size. It is `min(3.5in, 70vw)` — 3.5 inches as CSS defines the inch (96px), shrinking on a phone rather than overflowing.
+
+> Hiding the button does **not** disarm an override that is already running. If you armed it this morning and then hid the control, the robot is still unblocked until the ET date roll. Re-block first, then hide.
 
 ### Account · Market Regime · Trade Governor · Brains Health
 
