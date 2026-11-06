@@ -344,6 +344,20 @@ td.right, th.right { text-align: right; }
       </div>
       <div id="pd-reason" style="font-size:11px;color:var(--fg3);padding-top:6px;
            line-height:1.4"></div>
+      <div id="pd-brkb-wrap" style="display:none;padding-top:8px;margin-top:8px;
+           border-top:1px solid var(--border)">
+        <div style="font-size:10px;letter-spacing:.06em;color:var(--fg3);
+             font-weight:700;padding-bottom:4px">
+          OVERRIDE DAY — DEPLOYMENT SLEEVES
+          <span class="tag" id="pd-brkb-tag" style="margin-left:6px">—</span>
+        </div>
+        <div class="kv">
+          <div class="k">BRK.B leg</div><div class="v" id="pd-brkb-leg">—</div>
+          <div class="k">Top 25 leg</div><div class="v" id="pd-brkb-t25">—</div>
+        </div>
+        <div id="pd-brkb-note" style="font-size:10px;color:var(--fg3);
+             padding-top:5px;line-height:1.4"></div>
+      </div>
       <div class="btn-row" style="padding-top:10px;border-top:1px solid var(--border);
            margin-top:8px">
         <button class="btn btn-sm btn-amber" id="pd-override-btn"
@@ -1781,6 +1795,52 @@ function renderPrimaryDeployment(p) {
     btn.style.opacity = moot ? '0.45' : '1';
     btn.style.cursor = moot ? 'not-allowed' : 'pointer';
   }
+  // --- BRK.B deployment sleeve (override days only) ---
+  const bw = document.getElementById('pd-brkb-wrap');
+  const bk = p.brkb || {};
+  if (bw) {
+    if (bk.active) {
+      bw.style.display = '';
+      const money = (v) => '$' + (Number(v) || 0).toLocaleString(undefined,
+        {minimumFractionDigits: 2, maximumFractionDigits: 2});
+      const tag = document.getElementById('pd-brkb-tag');
+      if (tag) {
+        if (bk.bullish === true) {
+          tag.textContent = 'BRK.B BULLISH';
+          tag.style.color = 'var(--green)';
+        } else if (bk.bullish === false) {
+          tag.textContent = 'BRK.B BEARISH — SKIPPED';
+          tag.style.color = 'var(--red)';
+        } else {
+          tag.textContent = 'BRK.B UNMEASURED — SKIPPED';
+          tag.style.color = 'var(--fg3)';
+        }
+      }
+      const leg = document.getElementById('pd-brkb-leg');
+      if (leg) {
+        if (bk.bullish === true) {
+          leg.textContent = money(bk.brkb_spent) + ' of ' + money(bk.brkb_budget)
+            + ' (50% of buying power)';
+          leg.style.color = 'var(--green)';
+        } else {
+          leg.textContent = 'not buying BRK.B today';
+          leg.style.color = 'var(--fg3)';
+        }
+      }
+      const t25 = document.getElementById('pd-brkb-t25');
+      if (t25) {
+        t25.textContent = money(bk.top25_spent) + ' of ' + money(bk.top25_budget)
+          + ' (50% of account value)';
+        t25.style.color = (Number(bk.top25_headroom) || 0) > 0
+          ? 'var(--fg)' : 'var(--fg3)';
+      }
+      const bn = document.getElementById('pd-brkb-note');
+      if (bn) bn.textContent = bk.detail || '';
+    } else {
+      bw.style.display = 'none';
+    }
+  }
+
   const onote = document.getElementById('pd-override-note');
   if (onote) {
     if (_pdOverrideOn) {

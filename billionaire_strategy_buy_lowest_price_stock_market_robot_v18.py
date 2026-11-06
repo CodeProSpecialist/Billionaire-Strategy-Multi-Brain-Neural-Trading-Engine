@@ -10406,6 +10406,16 @@ _CORE_TECH_UNIVERSE = [
     'NTAP','OKTA','CTSH','MDB','ON','VRSN','SMCI','SWKS','FFIV','GEN','ZBRA',
     'MKSI','AKAM','LSCC','SMTC','JKHY','QRVO','AMKR','CRUS','DIOD','ACLS',
     'POWI','UCTT',
+    # Berkshire Hathaway Class B. Not a technology or consumer-electronics
+    # brand, and deliberately so -- operator instruction 2026-11-06. It is
+    # here because it is the designated large-sleeve name for an operator
+    # override day (see the BRK.B DEPLOYMENT SLEEVE section further down):
+    # on a day the regime gate was unblocked by hand, half the buying power
+    # goes here when the name is bullish. On every ordinary day it is just
+    # another universe member and competes for a top-25 slot on merit.
+    # Internal form is the yfinance dash spelling; to_alpaca() turns it into
+    # 'BRK.B' at the order boundary.
+    'BRK-B',
 ]
 # Session state for the one-per-day cap (ET date string -> count opened).
 _one_per_day_state = {'date': None, 'opened': 0}
@@ -10677,6 +10687,290 @@ def is_primary_deployment_override_active(now_et=None):
     today = now_et.date().isoformat()
     with _pd_regime_override_lock:
         return bool(_pd_regime_override.get(today))
+
+
+# ============================================================================
+# OVERRIDE-DAY BRK.B DEPLOYMENT SLEEVE
+# ============================================================================
+# Operator instruction 2026-11-06. When UNBLOCK REGIME TODAY has been pressed
+# on the PRIMARY DEPLOYMENT ONE HOUR BUY WINDOW tile, the 10:30-11:30 ET hour
+# is no longer handed wholesale to the ranked shortlist. It splits in two:
+#
+#   BRK.B is BULLISH today, with upward momentum
+#       -> 50% of buying power goes into BRK.B as one market order
+#       -> the top 25 share the other sleeve: 50% of account value
+#
+#   BRK.B is BEARISH today
+#       -> BRK.B is not bought at all
+#       -> the top 25 still get only 50% of account value. The other half
+#          stays in cash. It is NOT redeployed into the shortlist, because
+#          the operator rule sizes the shortlist sleeve at half the account
+#          either way -- an unblocked bear/panic day is exactly the day not
+#          to be fully invested in 25 names.
+#
+# Scope, deliberately narrow:
+#   * Only on a day the override is armed. A normal bull/sideways day is
+#     completely untouched -- the existing per-symbol sizing still applies.
+#   * Only inside the existing 10:30-11:30 ET hour. The sleeve does not move,
+#     widen or reopen the window.
+#   * The sleeve does not touch any exit path. A BRK.B position bought here
+#     sells through the same stops, chandelier, profit monitor and close
+#     sweep as anything else.
+#   * The blacklist, the governor, the day-trade check and the submit-time
+#     primary-deployment re-check all still apply to the BRK.B order.
+#
+# Honest note on what IS bypassed: the BRK.B leg is an operator directive,
+# not a brain decision. When the override is armed and BRK.B reads bullish,
+# the sleeve injects BRK.B as a buy candidate even if the ML score, the
+# backtest brain and the dip-buy setup never asked for it -- the bullishness
+# test below is the gate standing in for them. That is the instruction. If
+# you would rather BRK.B also had to earn its way through the scoring chain,
+# set BRKB_OVERRIDE_MODE to 'rank_only' and it will only be bought when it
+# shows up as a candidate on its own merits (still at the 50% size).
+BRKB_OVERRIDE_MODE = 'armed'       # 'armed' | 'rank_only' | 'off'
+BRKB_SYMBOL = 'BRK-B'              # internal yfinance form; to_alpaca -> BRK.B
+BRKB_OVERRIDE_BP_FRACTION = 0.50   # of BUYING POWER -> the BRK.B leg
+BRKB_TOP25_EQUITY_FRACTION = 0.50  # of ACCOUNT VALUE -> the top-25 leg
+BRKB_BULL_CACHE_TTL_SEC = 300      # re-read the daily tape at most every 5 min
+BRKB_MIN_BULL_CONDITIONS = 4       # of the 6 secondary checks below
+
+# Cache of today's bullish verdict, and the running tally of what each sleeve
+# has actually spent. Both are keyed by ET date, so they reset on their own at
+# the date roll exactly like the override itself.
+_brkb_bull_cache = {'ts': 0.0, 'date': None, 'bullish': None,
+                    'detail': 'not yet measured', 'checks': {}}
+_brkb_bull_lock = threading.Lock()
+_brkb_deploy = {'date': None, 'brkb_notional': 0.0, 'top25_notional': 0.0,
+                'brkb_orders': 0}
+_brkb_deploy_lock = threading.Lock()
+
+
+def _brkb_rsi14(closes):
+    """Wilder RSI(14) on a close array. None when there is not enough tape."""
+    if closes is None or len(closes) < 15:
+        return None
+    d = np.diff(closes.astype(float))
+    up = np.where(d > 0, d, 0.0)
+    dn = np.where(d < 0, -d, 0.0)
+    au = float(np.mean(up[:14]))
+    ad = float(np.mean(dn[:14]))
+    for i in range(14, len(d)):
+        au = (au * 13 + up[i]) / 14.0
+        ad = (ad * 13 + dn[i]) / 14.0
+    if ad <= 0:
+        return 100.0 if au > 0 else 50.0
+    rs = au / ad
+    return float(100.0 - (100.0 / (1.0 + rs)))
+
+
+def brkb_bullish_today(force=False):
+    """(bullish: bool|None, detail: str, checks: dict) for BRK.B today.
+
+    "Bullish with bullish upward momentum" is read off the daily tape as two
+    things that must BOTH hold -- direction and momentum -- plus a majority of
+    six secondary confirmations:
+
+      REQUIRED  price above yesterday's close      (up on the day)
+      REQUIRED  MACD(12,26,9) line above signal    (momentum pointing up)
+
+      secondary close above SMA20
+      secondary SMA20 above SMA50
+      secondary RSI(14) above 50
+      secondary MACD histogram above zero
+      secondary 5-day return positive
+      secondary 20-day return positive
+
+    Returns bullish=None when the tape could not be read at all. The caller
+    treats None as NOT bullish -- an unmeasurable name does not get half the
+    buying power on a day the regime was already overruled by hand.
+    """
+    today = datetime.now(eastern).date().isoformat()
+    now = time.time()
+    with _brkb_bull_lock:
+        if (not force and _brkb_bull_cache.get('date') == today
+                and (now - float(_brkb_bull_cache.get('ts') or 0)) < BRKB_BULL_CACHE_TTL_SEC
+                and _brkb_bull_cache.get('bullish') is not None):
+            return (_brkb_bull_cache['bullish'], _brkb_bull_cache['detail'],
+                    dict(_brkb_bull_cache.get('checks') or {}))
+
+    bullish, detail, checks = None, 'tape unavailable', {}
+    try:
+        df = get_cached_data(BRKB_SYMBOL, 'history_90d',
+                             lambda s: yf_history(s, period='90d'), BRKB_SYMBOL)
+        if df is None or df.empty or len(df) < 21:
+            detail = 'not enough daily history for BRK.B (need 21 bars)'
+        else:
+            d = df.dropna(subset=['Close'])
+            cl = d['Close'].values.astype(float).flatten()
+            last, prev = float(cl[-1]), float(cl[-2])
+            sma20 = float(np.mean(cl[-20:]))
+            sma50 = float(np.mean(cl[-50:])) if len(cl) >= 50 else sma20
+            _s = pd.Series(cl)
+            ema12 = _s.ewm(span=12, adjust=False).mean()
+            ema26 = _s.ewm(span=26, adjust=False).mean()
+            macd_line = ema12 - ema26
+            macd_sig = macd_line.ewm(span=9, adjust=False).mean()
+            macd = float(macd_line.iloc[-1])
+            sig = float(macd_sig.iloc[-1])
+            hist = macd - sig
+            rsi = _brkb_rsi14(cl)
+            ret5 = (last / float(cl[-6]) - 1.0) if len(cl) >= 6 and cl[-6] > 0 else None
+            ret20 = (last / float(cl[-21]) - 1.0) if cl[-21] > 0 else None
+
+            req_up = last > prev
+            req_macd = macd > sig
+            checks = {
+                'price_above_prev_close': bool(req_up),
+                'macd_above_signal': bool(req_macd),
+                'close_above_sma20': bool(last > sma20),
+                'sma20_above_sma50': bool(sma20 > sma50),
+                'rsi14_above_50': bool(rsi is not None and rsi > 50.0),
+                'macd_hist_positive': bool(hist > 0),
+                'ret_5d_positive': bool(ret5 is not None and ret5 > 0),
+                'ret_20d_positive': bool(ret20 is not None and ret20 > 0),
+            }
+            secondary = sum(1 for k, v in checks.items()
+                            if v and k not in ('price_above_prev_close',
+                                               'macd_above_signal'))
+            bullish = bool(req_up and req_macd
+                           and secondary >= BRKB_MIN_BULL_CONDITIONS)
+            checks['secondary_passed'] = int(secondary)
+            checks['secondary_required'] = int(BRKB_MIN_BULL_CONDITIONS)
+            checks['last'] = round(last, 4)
+            checks['prev_close'] = round(prev, 4)
+            checks['rsi14'] = round(rsi, 2) if rsi is not None else None
+            checks['macd'] = round(macd, 4)
+            checks['macd_signal'] = round(sig, 4)
+            checks['ret_5d'] = round(ret5, 5) if ret5 is not None else None
+            checks['ret_20d'] = round(ret20, 5) if ret20 is not None else None
+            detail = ("BRK.B %s: %.2f vs prev %.2f (%+.2f%%), MACD %.3f vs "
+                      "signal %.3f, RSI %s, 5d %s, 20d %s, %d/%d secondary"
+                      % ('BULLISH' if bullish else 'BEARISH', last, prev,
+                         (last / prev - 1.0) * 100.0 if prev else 0.0,
+                         macd, sig,
+                         ('%.1f' % rsi) if rsi is not None else 'n/a',
+                         ('%+.2f%%' % (ret5 * 100)) if ret5 is not None else 'n/a',
+                         ('%+.2f%%' % (ret20 * 100)) if ret20 is not None else 'n/a',
+                         secondary, BRKB_MIN_BULL_CONDITIONS))
+            if not req_up:
+                detail += " -- not up on the day"
+            elif not req_macd:
+                detail += " -- MACD below signal"
+    except Exception as e:
+        logging.debug("BRK.B bullish check failed: %s", e)
+        detail = "BRK.B bullish check errored: %s" % e
+
+    with _brkb_bull_lock:
+        _brkb_bull_cache.update({'ts': now, 'date': today, 'bullish': bullish,
+                                 'detail': detail, 'checks': dict(checks)})
+    return bullish, detail, checks
+
+
+def _brkb_deploy_today():
+    """Today's spend tally, rolling the dict over on an ET date change."""
+    today = datetime.now(eastern).date().isoformat()
+    with _brkb_deploy_lock:
+        if _brkb_deploy.get('date') != today:
+            _brkb_deploy.update({'date': today, 'brkb_notional': 0.0,
+                                 'top25_notional': 0.0, 'brkb_orders': 0})
+        return dict(_brkb_deploy)
+
+
+def brkb_record_fill(yf_symbol, notional):
+    """Book a filled buy against whichever sleeve it came out of.
+
+    Called once per fill. Harmless on a non-override day -- the tally is only
+    ever read while the override is armed.
+    """
+    try:
+        notional = float(notional or 0.0)
+        if notional <= 0:
+            return
+        today = datetime.now(eastern).date().isoformat()
+        is_brkb = str(yf_symbol or '').upper().replace('.', '-') == BRKB_SYMBOL
+        with _brkb_deploy_lock:
+            if _brkb_deploy.get('date') != today:
+                _brkb_deploy.update({'date': today, 'brkb_notional': 0.0,
+                                     'top25_notional': 0.0, 'brkb_orders': 0})
+            if is_brkb:
+                _brkb_deploy['brkb_notional'] += notional
+                _brkb_deploy['brkb_orders'] += 1
+            else:
+                _brkb_deploy['top25_notional'] += notional
+    except Exception as e:
+        logging.debug("brkb_record_fill(%s, %s) failed: %s", yf_symbol, notional, e)
+
+
+def brkb_override_plan(now_et=None):
+    """The two-sleeve plan for right now. Always safe to call.
+
+    Keys:
+        active          -- the split is in force this instant
+        bullish         -- BRK.B verdict (None = unmeasurable)
+        detail          -- one line of plain English
+        checks          -- the individual bullish tests, for the dashboard
+        brkb_budget     -- dollars allotted to the BRK.B leg
+        brkb_spent      -- dollars already filled into BRK.B today
+        brkb_headroom   -- what is left of the BRK.B leg
+        top25_budget    -- dollars allotted to the top-25 leg
+        top25_spent     -- dollars already filled into shortlist names today
+        top25_headroom  -- what is left of the top-25 leg
+        buying_power / equity -- the figures the budgets were struck from
+    """
+    out = {'active': False, 'mode': BRKB_OVERRIDE_MODE, 'bullish': None,
+           'detail': 'override not armed', 'checks': {},
+           'brkb_budget': 0.0, 'brkb_spent': 0.0, 'brkb_headroom': 0.0,
+           'top25_budget': 0.0, 'top25_spent': 0.0, 'top25_headroom': 0.0,
+           'buying_power': 0.0, 'equity': 0.0, 'symbol': BRKB_SYMBOL,
+           'bp_fraction': BRKB_OVERRIDE_BP_FRACTION,
+           'equity_fraction': BRKB_TOP25_EQUITY_FRACTION}
+    if BRKB_OVERRIDE_MODE == 'off':
+        out['detail'] = 'BRK.B override sleeve is off'
+        return out
+    try:
+        now_et = now_et or datetime.now(eastern)
+        if not is_primary_deployment_override_active(now_et):
+            return out
+        st = primary_deployment_status(now_et)
+        if not st.get('time_open'):
+            out['detail'] = ('override armed, but the primary deployment hour '
+                             'is not running')
+            return out
+
+        tally = _brkb_deploy_today()
+        bullish, detail, checks = brkb_bullish_today()
+        try:
+            acct = api.get_account()
+            bp = float(acct.buying_power or 0.0)
+            eq = float(acct.equity or 0.0)
+        except Exception as e:
+            logging.debug("BRK.B sleeve: account read failed: %s", e)
+            bp = eq = 0.0
+
+        brkb_budget = max(0.0, bp * BRKB_OVERRIDE_BP_FRACTION) if bullish else 0.0
+        top25_budget = max(0.0, eq * BRKB_TOP25_EQUITY_FRACTION)
+        out.update({
+            'active': True, 'bullish': bullish, 'checks': checks,
+            'buying_power': bp, 'equity': eq,
+            'brkb_budget': round(brkb_budget, 2),
+            'brkb_spent': round(float(tally['brkb_notional']), 2),
+            'brkb_headroom': round(max(0.0, brkb_budget - float(tally['brkb_notional'])), 2),
+            'top25_budget': round(top25_budget, 2),
+            'top25_spent': round(float(tally['top25_notional']), 2),
+            'top25_headroom': round(max(0.0, top25_budget - float(tally['top25_notional'])), 2),
+        })
+        if bullish:
+            out['detail'] = ("%s -- 50%% of buying power ($%.2f) to BRK.B, "
+                             "50%% of account value ($%.2f) to the top 25"
+                             % (detail, brkb_budget, top25_budget))
+        else:
+            out['detail'] = ("%s -- skipping BRK.B; the top 25 get 50%% of "
+                             "account value ($%.2f) and the rest stays in cash"
+                             % (detail, top25_budget))
+    except Exception as e:
+        logging.debug("brkb_override_plan failed: %s", e)
+        out['detail'] = 'BRK.B sleeve errored: %s' % e
+    return out
 
 
 def _regime_take_sample(today, now_et):
@@ -20952,6 +21246,105 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
                 position_book.release(c['api_symbol'])
         candidates = _kept
 
+    # ---------------- Override-day BRK.B sleeve ----------------
+    # On a day the operator pressed UNBLOCK REGIME TODAY, BRK.B is pulled out
+    # of the top-25 competition and handled as its own 50%-of-buying-power
+    # leg. Done here, AFTER the momentum filter and BEFORE the empty-pool
+    # bail-out, so the BRK.B leg still runs on a day when nothing else in the
+    # universe produced a candidate.
+    try:
+        _brkb_plan = brkb_override_plan()
+    except Exception as _e:
+        logging.debug("BRK.B sleeve: plan lookup failed (%s).", _e)
+        _brkb_plan = {'active': False}
+
+    if _brkb_plan.get('active'):
+        print(f"  [BRK.B sleeve] {_brkb_plan.get('detail')}")
+        _brkb_api = to_alpaca(BRKB_SYMBOL)
+        # Whatever the verdict, BRK.B does not also compete for a top-25 slot
+        # on an override day -- it is either the sleeve or it is nothing.
+        _kept = []
+        for c in candidates:
+            if str(c.get('yf_symbol') or '').upper() == BRKB_SYMBOL:
+                print(f"  [BRK.B sleeve] {BRKB_SYMBOL} removed from the top-25 "
+                      f"pool; it is handled by the sleeve on an override day.")
+                try:
+                    position_book.release(c['api_symbol'])
+                except Exception:
+                    pass
+                continue
+            _kept.append(c)
+        candidates = _kept
+
+        if not _brkb_plan.get('bullish'):
+            print(f"  [BRK.B sleeve] BRK.B is not bullish today — not buying "
+                  f"it. The top 25 are capped at "
+                  f"${_brkb_plan.get('top25_budget', 0.0):,.2f} "
+                  f"(50% of account value).")
+        elif BRKB_OVERRIDE_MODE == 'rank_only':
+            print("  [BRK.B sleeve] mode is 'rank_only' — BRK.B is bullish but "
+                  "will only be bought if it earns a candidate slot itself.")
+        elif _brkb_plan.get('brkb_headroom', 0.0) < MIN_ORDER_NOTIONAL:
+            print(f"  [BRK.B sleeve] BRK.B leg already deployed "
+                  f"(${_brkb_plan.get('brkb_spent', 0.0):,.2f} of "
+                  f"${_brkb_plan.get('brkb_budget', 0.0):,.2f}). Nothing left "
+                  f"to add today.")
+        elif _brkb_api in position_book.symbols():
+            print(f"  [BRK.B sleeve] {_brkb_api} is already held — the sleeve "
+                  f"does not add to an existing position.")
+        else:
+            _blocked, _bl_why = (False, '')
+            try:
+                _blocked, _bl_why = BLACKLIST.is_blocked(BRKB_SYMBOL)
+            except Exception:
+                pass
+            if _blocked:
+                print(f"  [BRK.B sleeve] {BRKB_SYMBOL} is blacklisted "
+                      f"({_bl_why}). Sleeve stands down.")
+            elif not position_book.claim(_brkb_api):
+                print(f"  [BRK.B sleeve] {_brkb_api} is claimed by another "
+                      f"thread this cycle. Skipping.")
+            else:
+                _brkb_price = None
+                try:
+                    _brkb_price = _fetch_current_price(BRKB_SYMBOL)
+                except Exception as _e:
+                    logging.debug("BRK.B sleeve: price fetch failed (%s).", _e)
+                if not _brkb_price or _brkb_price <= 0:
+                    print("  [BRK.B sleeve] no usable BRK.B price. Skipping.")
+                    position_book.release(_brkb_api)
+                else:
+                    _brkb_df = None
+                    try:
+                        _brkb_df = get_cached_data(
+                            BRKB_SYMBOL, 'history_90d',
+                            lambda s: yf_history(s, period='90d'), BRKB_SYMBOL)
+                    except Exception:
+                        pass
+                    _brkb_c = {
+                        'symbol': BRKB_SYMBOL, 'yf_symbol': BRKB_SYMBOL,
+                        'api_symbol': _brkb_api,
+                        'current_price': float(_brkb_price),
+                        'sig': {'score': None,
+                                'reasons': ['operator override sleeve: BRK.B '
+                                            'bullish with upward momentum']},
+                        'atr': None, 'atr_pct': None,
+                        # Ranks above everything else in the pass: the sleeve
+                        # order must go out before the shortlist eats the
+                        # cash, since both draw on the same buying power.
+                        'rank_score': float('inf'),
+                        'regime': _brkb_plan.get('regime'),
+                        'reward_source': 'score', 'expected_return': None,
+                        'df': _brkb_df, 'ml_adjustment': None,
+                        'rk_vol': None, 'rk_m20': None, 'rk_mcap': None,
+                        'brkb_sleeve': True,
+                        'brkb_allocation': float(_brkb_plan.get('brkb_headroom') or 0.0),
+                    }
+                    candidates.insert(0, _brkb_c)
+                    print(f"  [BRK.B sleeve] queued BRK.B at ${_brkb_price:.2f} "
+                          f"for ${_brkb_c['brkb_allocation']:,.2f} "
+                          f"(50% of buying power).")
+
     try:
         composite_scan_commit()
     except Exception:
@@ -20998,6 +21391,12 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
         print(f"  [one-per-day SHADOW] would buy {candidates[0]['yf_symbol']} "
               f"only; letting the normal {MAX_NEW_POSITIONS_PER_CYCLE}-position "
               f"path run.")
+    # The BRK.B override sleeve is an operator directive with its own
+    # budget, so it does not consume one of the MAX_NEW_POSITIONS_PER_CYCLE
+    # slots -- it is lifted out, and the cap is applied to the rest.
+    _brkb_sleeve_c = next((c for c in candidates if c.get('brkb_sleeve')), None)
+    if _brkb_sleeve_c is not None:
+        candidates = [c for c in candidates if not c.get('brkb_sleeve')]
     to_buy = candidates[:max(0, _cap)]
     skipped = candidates[MAX_NEW_POSITIONS_PER_CYCLE:]
     for c in skipped:
@@ -21031,6 +21430,23 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
         try:
             with lock:
                 _cash_at_pass_start = float(api.get_account().cash)
+            # On an override day the shortlist gets only its own sleeve -- 50%
+            # of account value, less whatever it has already spent today --
+            # so the equal split divides THAT, not the whole cash balance.
+            # The other half is either BRK.B's or stays in cash.
+            if _brkb_plan.get('active'):
+                _t25 = float(_brkb_plan.get('top25_headroom') or 0.0)
+                if _brkb_sleeve_c is not None:
+                    # The BRK.B order has not filled yet but is about to, so
+                    # hold its notional back out of the shortlist's cash view.
+                    _cash_at_pass_start = max(
+                        0.0, _cash_at_pass_start
+                        - float(_brkb_sleeve_c.get('brkb_allocation') or 0.0))
+                _cash_at_pass_start = min(_cash_at_pass_start, _t25)
+                print(f"  [BRK.B sleeve] top-25 leg has "
+                      f"${_t25:,.2f} of its "
+                      f"${_brkb_plan.get('top25_budget', 0.0):,.2f} budget left; "
+                      f"splitting ${_cash_at_pass_start:,.2f} this pass.")
             _equal_share = max(0.0, (_cash_at_pass_start - CASH_BUFFER)
                                / float(len(to_buy)))
             print(f"  [equal split] ${_cash_at_pass_start:,.2f} cash across "
@@ -21040,6 +21456,11 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
                             "split (%s); falling back to "
                             "MAX_CASH_FRACTION_PER_ORDER.", _es)
             _equal_share = None
+
+    if _brkb_sleeve_c is not None:
+        # Front of the queue: the sleeve and the shortlist draw on the same
+        # buying power, so the 50% leg is submitted first.
+        to_buy = [_brkb_sleeve_c] + list(to_buy)
 
     for c in to_buy:
         symbol, yf_symbol, api_symbol = c['symbol'], c['yf_symbol'], c['api_symbol']
@@ -21060,7 +21481,30 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
         try:
             # ---------------- Position sizing ----------------
             is_bull_buy = bool(c.get('bull_strategy'))
-            if is_bull_buy or _pb:
+            _is_brkb_sleeve = bool(c.get('brkb_sleeve'))
+            if _is_brkb_sleeve:
+                # Operator sleeve: 50% of buying power, clamped only by what
+                # is actually spendable. No per-symbol allocation cap applies
+                # -- the whole point of the sleeve is a position far larger
+                # than MAX_ALLOCATION_PER_SYMBOL.
+                notional = float(c.get('brkb_allocation') or 0.0)
+                with lock:
+                    _acct_now = api.get_account()
+                    cash_available = float(_acct_now.cash)
+                    _bp_now = float(_acct_now.buying_power or 0.0)
+                _spendable = (max(0.0, cash_available - CASH_BUFFER)
+                              if ACCOUNT_MODE == 'cash'
+                              else max(0.0, _bp_now - CASH_BUFFER))
+                notional = min(notional, _spendable) * 0.999
+                if notional < MIN_ORDER_NOTIONAL:
+                    print(f"  [BRK.B sleeve] {yf_symbol}: ${notional:.2f} "
+                          f"available after the cash/buying-power clamp is "
+                          f"below the ${MIN_ORDER_NOTIONAL:.2f} floor. Skipping.")
+                    position_book.release(api_symbol)
+                    continue
+                print(f"  [BRK.B sleeve] {yf_symbol}: sizing "
+                      f"${notional:,.2f} (50% of buying power).")
+            elif is_bull_buy or _pb:
                 # Bull-strategy path: equal-cash allocation capped at the
                 # per-symbol max, computed in the scan. Bypasses the risk-based
                 # sizer entirely -- the bull strategy sizes by cash, not ATR.
@@ -21154,6 +21598,32 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
                 else:
                     # Slippage haircut
                     notional = min(notional, headroom) * 0.999
+
+            # ---- Override-day top-25 budget clamp ----
+            # Every non-sleeve order on an override day comes out of the
+            # 50%-of-account-value leg. Re-read the tally here rather than
+            # trusting the figure from the top of the pass: earlier orders in
+            # this same loop have already spent some of it.
+            if not _is_brkb_sleeve and _brkb_plan.get('active'):
+                try:
+                    _live = brkb_override_plan()
+                    _t25_left = float(_live.get('top25_headroom') or 0.0)
+                except Exception as _e:
+                    logging.debug("top-25 budget re-read failed (%s).", _e)
+                    _t25_left = float(_brkb_plan.get('top25_headroom') or 0.0)
+                if notional > _t25_left:
+                    print(f"  [BRK.B sleeve] {yf_symbol}: trimming "
+                          f"${notional:,.2f} to the ${_t25_left:,.2f} left in "
+                          f"the top-25 leg (50% of account value).")
+                    notional = _t25_left
+                if notional < MIN_ORDER_NOTIONAL:
+                    print(f"  [BRK.B sleeve] {yf_symbol}: top-25 leg exhausted "
+                          f"for today. Not buying.")
+                    try:
+                        position_book.release(api_symbol)
+                    except Exception:
+                        pass
+                    continue
 
             notional = round(notional, 2)
             if notional < MIN_ORDER_NOTIONAL:
@@ -21490,6 +21960,14 @@ def _buy_stocks_body(symbols_to_buy_list, lock):
                         _PB_ENTERED.add((datetime.now(eastern).date().isoformat(), api_symbol))
                         _pbk = (datetime.now(eastern).date().isoformat(), c.get('playbook_regime'))
                         _PB_DAY_COUNT[_pbk] = _PB_DAY_COUNT.get(_pbk, 0) + 1
+
+                    # Book the fill against its deployment sleeve so the
+                    # override-day budgets reflect real spend, not estimates.
+                    try:
+                        brkb_record_fill(yf_symbol,
+                                         float(filled_qty) * float(filled_price))
+                    except Exception as _e:
+                        logging.debug("brkb_record_fill failed: %s", _e)
 
                     # ═══ BRAIN SUITE POST-FILL ═══
                     try:
@@ -25225,6 +25703,7 @@ class DashboardWSEngine:
                 'buy_top_n': _top_n,
                 'override': bool(_pd.get('override')),
                 'override_date': datetime.now(eastern).date().isoformat(),
+                'brkb': brkb_override_plan(),
             }
         except Exception as e:
             state['primary_deployment'] = {'error': str(e)}
