@@ -8,6 +8,8 @@ Every buy order has to survive a committee. A timing brain scores it, a day-trad
 
 <sub>*Screenshots throughout this README are captured from the real `alpaca_dashboard_v18.html` running against a simulated market feed. The layout, indicators, and computed values are genuine; the account balances, symbols, and P&L are sample data, not a trading record.*</sub>
 
+<sub>[See the entire dashboard in one tall image →](docs/images/01-dashboard-full.png)</sub>
+
 ---
 
 ## 📑 Contents
