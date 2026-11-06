@@ -20,6 +20,7 @@ Every buy order has to survive a committee. A timing brain scores it, a day-trad
 - [Run it](#-run-it)
 - [The dashboard, tile by tile](#-the-dashboard-tile-by-tile)
   - [Primary Deployment One Hour Buy Window](#primary-deployment-one-hour-buy-window)
+  - [Override-day BRK.B deployment sleeve](#override-day-brkb-deployment-sleeve)
 - [The features that actually move the needle](#-the-features-that-actually-move-the-needle)
 - [Configuration reference](#-configuration-reference)
 - [Troubleshooting](#-troubleshooting)
@@ -32,7 +33,7 @@ Every buy order has to survive a committee. A timing brain scores it, a day-trad
 | | |
 |---|---|
 | **Broker** | Alpaca (paper or live) — market orders only, no resting limit orders |
-| **Universe** | 82 technology, computer and consumer-electronics brands (NASDAQ + NYSE), mid cap and up — scanned and ranked every cycle, **top 25** eligible to buy |
+| **Universe** | 83 names (NASDAQ + NYSE), mid cap and up: 82 technology, computer and consumer-electronics brands, plus **BRK.B** as the override-day sleeve name — scanned and ranked every cycle, **top 25** eligible to buy |
 | **Buy window** | **10:30–11:30 AM Eastern only**, and only when the latched regime is bullish or sideways |
 | **Entries** | Up to **25 positions in a single pass**, cash split equally. Bull days use the **same setup as sideways** (20-day dip, 2% stop, 3% target) |
 | **Entry signal** | `dip_20d` — price ≥1% off its 3-hour high and turning up on the current bar, in a name with positive 20-day momentum |
@@ -224,9 +225,9 @@ Button state is driven by the server snapshot on every tick rather than by local
 
 **Regime is measured, not glanced at.** From **10:00 to 10:30 ET** the robot samples the SPY + VIX regime repeatedly and, at 10:30, latches the **majority verdict** for the rest of the session. A split decision breaks toward the more conservative regime. The latch is frozen — the robot cannot talk itself into buying at 11:15 because SPY twitched across its 20-day SMA.
 
-> **Backtest caveat:** the playbook's published +0.11%/trade figure was measured on the **Nasdaq-100**. The live universe is now the 82-name tech+electronics list, which that backtest does not cover — treat the figure as historical context for a different universe, not as a forecast for this one. Set `PLAYBOOK_NDX_UNIVERSE_SOURCE = 'ndx100'` to return to the backtested configuration.
+> **Backtest caveat:** the playbook's published +0.11%/trade figure was measured on the **Nasdaq-100**. The live universe is now the 83-name tech+electronics list (plus BRK.B), which that backtest does not cover — treat the figure as historical context for a different universe, not as a forecast for this one. Set `PLAYBOOK_NDX_UNIVERSE_SOURCE = 'ndx100'` to return to the backtested configuration.
 
-**Wide scan, narrow buy list.** The whole universe is measured and scored every cycle — nothing is skipped — but only the **top 25** are eligible to be bought. Ranking uses the operator composite (relative dollar volume, 20-day momentum, market-cap proxy), z-scored across the candidates so no one factor's raw units dominate, and is applied *after* the liquidity and momentum filters so the 25 slots go to names that already qualify. A name ranked 26th is not bought even with a perfect setup, and the leaders will tend to recur day to day — that is what ranking does.
+**Wide scan, narrow buy list.** The whole universe is measured and scored every cycle — nothing is skipped — but only the **top 25** are eligible to be bought. Ranking uses the operator composite (relative dollar volume, 20-day momentum, market-cap proxy), z-scored across the candidates so no one factor's raw units dominate, and is applied *after* the liquidity and momentum filters so the 25 slots go to names that already qualify. A name ranked 26th is not bought even with a perfect setup, and the leaders will tend to recur day to day — that is what ranking does. On an operator override day the shortlist shares the hour with the BRK.B sleeve and is capped at half the account — see [Override-day BRK.B deployment sleeve](#override-day-brkb-deployment-sleeve).
 
 **The rules, in order.** Every buy must clear all of these, in this sequence:
 
@@ -234,7 +235,7 @@ Button state is driven by the server snapshot on every tick rather than by local
 |---|---|---|
 | 1 | **Clock** | 10:30–11:30 AM Eastern. Outside it, no order is placed — checked at the top of the cycle *and* again immediately before `submit_order` |
 | 2 | **Regime** | Latched at 10:30 from samples taken 10:00–10:30. Bull or sideways trades; bear, panic and unmeasured do not |
-| 3 | **Universe** | 82 technology, computer and consumer-electronics names (NASDAQ + NYSE), mid cap and up |
+| 3 | **Universe** | 83 names (NASDAQ + NYSE), mid cap and up: 82 technology, computer and consumer-electronics names plus BRK.B |
 | 4 | **Liquidity** | ≥ $20M average daily dollar volume |
 | 5 | **Momentum** | Positive 20-day momentum |
 | 6 | **Shortlist** | Ranked by dollar volume + 20-day momentum + market-cap proxy; only the **top 25** remain eligible |
@@ -255,6 +256,53 @@ Bull and sideways are deliberately identical: a bull day buys exactly the way a 
 > **A consequence worth knowing:** `dip_20d` needs a pullback of at least 1% off the 3-hour high. On a strong bull morning names often grind upward without pulling back that far — which is exactly when the setup will *not* fire. Bull days may therefore produce *fewer* fills than sideways days, not more.
 
 The window is an **entry** gate only. Stops, the profit monitor, the chandelier trail, scale-outs, and the close sweeps are never gated by it — an open position can always leave, at any hour, in any regime. The check is enforced twice: once at the top of the buy cycle, and again immediately before `submit_order`, because a scan can run for minutes and the window can close underneath it.
+
+### Override-day BRK.B deployment sleeve
+
+Unblocking the regime says *trade a day the robot would have sat out*. On such a day, spreading the account thinly across 25 speculative tech names is arguably the wrong shape of risk — so the deployment hour splits into two sleeves instead, with one of them in Berkshire Hathaway Class B.
+
+This behaviour exists **only** while the override is armed **and** the clock is inside 10:30–11:30 ET. On an ordinary bull or sideways day nothing here applies, and BRK.B is simply another universe member competing for a top-25 slot on merit.
+
+| BRK.B today | BRK.B leg | Top-25 leg |
+|---|---|---|
+| **Bullish**, with upward momentum | **50% of buying power**, in one market order | **50% of account value** |
+| **Bearish** (or unmeasurable) | not bought at all | **50% of account value** — the other half stays in cash |
+
+Note the second row: a bearish BRK.B does **not** hand its half to the shortlist. An unblocked bear or panic day is exactly the day not to be fully invested in 25 names, so the unused sleeve is left in cash deliberately.
+
+**What "bullish with upward momentum" means.** Read off the daily tape, two conditions are **required** and both must hold:
+
+- price **above yesterday's close** — up on the day
+- **MACD(12, 26, 9) line above its signal** — momentum pointing up
+
+…plus at least **4 of these 6** secondary confirmations:
+
+| Confirmation | |
+|---|---|
+| Close above SMA20 | Close above its 20-day average |
+| SMA20 above SMA50 | Short average above the long one |
+| RSI(14) above 50 | Not in the lower half of its range |
+| MACD histogram positive | The spread is on the right side of zero |
+| 5-day return positive | Up over the week |
+| 20-day return positive | Up over the month |
+
+A tape that cannot be read at all counts as **not bullish**. An unmeasurable name does not get half the buying power on a day you have already overruled the regime by hand.
+
+**The sleeve tile.** On an override day the Primary Deployment tile grows a sleeve block showing the verdict and dollars spent against each leg's budget, so you can see at a glance which half went where:
+
+| Readout | Shows |
+|---|---|
+| Tag | `BRK.B BULLISH` (green), `BRK.B BEARISH — SKIPPED` (red), or `BRK.B UNMEASURED — SKIPPED` |
+| **BRK.B leg** | Spent vs budget, or "not buying BRK.B today" |
+| **Top 25 leg** | Spent vs budget, greyed once the leg is exhausted |
+
+**Honest note on what the sleeve bypasses.** The BRK.B leg is an **operator directive, not a brain decision**. When the override is armed and BRK.B reads bullish, BRK.B is bought even if the ML score, the backtest brain and the `dip_20d` setup never asked for it — the bullishness test above is the gate standing in for them. If you would rather BRK.B also had to earn its way through the scoring chain, set `BRKB_OVERRIDE_MODE = 'rank_only'` and it will only be bought when it surfaces as a candidate on its own merits, still at the 50% size.
+
+Everything else still applies to the BRK.B order: the blacklist, the trade governor, the day-trade check, and the submit-time re-check of the deployment window. The sleeve touches **no exit path** — a BRK.B position leaves through the same hard stop, chandelier trail, profit monitor and close sweep as anything else. And the sleeve order is submitted **first**, before the shortlist, because both legs draw on the same buying power.
+
+Budgets track **real fills**, not estimates: every fill is booked against its sleeve, and each shortlist order re-reads its remaining headroom immediately before submit, so earlier orders in the same pass cannot overspend the half.
+
+> **Buying power is not equity.** The BRK.B leg is 50% of `buying_power`, which on a margin account is larger than account value — while the top-25 leg is 50% of equity. That asymmetry is intentional, but it means the two legs are struck from different numbers. Change `BRKB_OVERRIDE_BP_FRACTION`'s source in `brkb_override_plan` if you would rather both halves came off equity.
 
 ### Account · Market Regime · Trade Governor · Brains Health
 
@@ -448,7 +496,7 @@ The constants live near the top of the `.py` file; the dashboard-editable ones a
 | `PRIMARY_DEPLOYMENT_REGIMES` | `('bull','sideways')` | Regimes allowed to buy; everything else buys nothing |
 | `REGIME_SAMPLE_START_ET` | `10:00` | Regime sampling begins |
 | `REGIME_ASSESS_ET` | `10:30` | Majority verdict is latched for the session |
-| `PLAYBOOK_NDX_UNIVERSE_SOURCE` | `tech` | `tech` = 82 tech+electronics names, `ndx100` = full Nasdaq-100 |
+| `PLAYBOOK_NDX_UNIVERSE_SOURCE` | `tech` | `tech` = 83 names (82 tech+electronics, plus BRK.B), `ndx100` = full Nasdaq-100 |
 | `DAILY_MAX_POSITIONS` | `25` | Positions per day on a tradable (bull or sideways) day |
 | `PLAYBOOK_RULES['bull']` | `dip_20d, 2%, 3%, 25` | Bull-day rule — an exact copy of the sideways rule |
 | `PLAYBOOK_RULES['sideways']` | `dip_20d, 2%, 3%, 25` | Sideways-day rule |
@@ -457,6 +505,12 @@ The constants live near the top of the `.py` file; the dashboard-editable ones a
 | `BULL_BUY_WINDOW_START/END` | `10:30` / `11:30` | Legacy bull-v8 window, aligned to the deployment hour |
 | `NDX_TOP_N_MODE` | `armed` | `armed` = only the top-ranked names may be bought, `off` = whole universe |
 | `NDX_TOP_N` | `25` | How many ranked names are eligible to buy |
+| `BRKB_OVERRIDE_MODE` | `armed` | `armed` = buy BRK.B on a bullish override day, `rank_only` = only when it earns a candidate slot itself, `off` = disable the sleeve |
+| `BRKB_SYMBOL` | `BRK-B` | The sleeve name, in internal yfinance form (sent to the broker as `BRK.B`) |
+| `BRKB_OVERRIDE_BP_FRACTION` | `0.50` | Share of **buying power** into the BRK.B leg |
+| `BRKB_TOP25_EQUITY_FRACTION` | `0.50` | Share of **account value** left for the top-25 leg |
+| `BRKB_MIN_BULL_CONDITIONS` | `4` | Secondary confirmations required (of 6) on top of the two mandatory ones |
+| `BRKB_BULL_CACHE_TTL_SEC` | `300` | How often the BRK.B daily tape is re-read |
 | `EARLY_MORNING_CUTOFF_ET` | `10:30` | When the early gate opens fully |
 | `EARLY_MORNING_MIN_DROP_PCT` | `0.02` | Required dislocation before the cutoff |
 | `BRAIN_B_MODE` / `BRAIN_B_MIN_SAFE` | `armed` / `0.40` | Risk brain veto and its threshold |
