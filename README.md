@@ -312,7 +312,11 @@ The button is a safety gate with a switch on it, so it is not on screen until yo
 
 > 🛑 The regime override control is hidden. Enable *Show "Unblock Regime Today" button* in Settings to reveal it.
 
-Settings → **🛑 Operator Override** carries the sliding switch that reveals it. There are then **two** confirmations between a fresh browser and an unblocked bear day, and they are the same dialog both times — a 3.5-inch red stop sign over:
+Settings → **🛑 Operator Override** carries the sliding switch that reveals it:
+
+![Settings — Operator Override](docs/images/29-settings-operator-override.png)
+
+Flipping it on is what puts the button on the tile. There are then **two** confirmations between a fresh browser and an unblocked bear day, and they are the same dialog both times — a 3.5-inch red stop sign over:
 
 > **Stop to think because Bear Market means No Profit is going to be made in the market today in general. Do you still want to proceed?**
 
