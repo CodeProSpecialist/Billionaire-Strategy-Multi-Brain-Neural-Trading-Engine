@@ -344,6 +344,13 @@ td.right, th.right { text-align: right; }
       </div>
       <div id="pd-reason" style="font-size:11px;color:var(--fg3);padding-top:6px;
            line-height:1.4"></div>
+      <div class="btn-row" style="padding-top:10px;border-top:1px solid var(--border);
+           margin-top:8px">
+        <button class="btn btn-sm btn-amber" id="pd-override-btn"
+                onclick="togglePdOverride()">Unblock Regime Today</button>
+      </div>
+      <div id="pd-override-note" style="font-size:10px;color:var(--fg3);
+           padding-top:6px;line-height:1.4"></div>
     </div>
   </div>
 
@@ -1714,7 +1721,14 @@ function renderPrimaryDeployment(p) {
   }
 
   let label, bg, fg, tagTxt, tagCls;
-  if (p.open) {
+  if (p.open && p.override && !p.regime_ok) {
+    // Operator waived a blocking regime for today. Shown distinctly from a
+    // normal green open so nobody mistakes an overridden bear day for a
+    // regime the bot actually liked.
+    label = '● BUY WINDOW OPEN — REGIME OVERRIDDEN';
+    bg = 'rgba(88,166,255,0.18)'; fg = 'var(--blue)';
+    tagTxt = 'OVERRIDE'; tagCls = 'tag tag-blue';
+  } else if (p.open) {
     label = '● BUY WINDOW OPEN';
     bg = 'rgba(16,185,129,0.18)'; fg = 'var(--green)';
     tagTxt = 'OPEN'; tagCls = 'tag tag-green';
@@ -1748,6 +1762,62 @@ function renderPrimaryDeployment(p) {
         : `all ${p.universe_count || 0} scanned`, '');
   const note = document.getElementById('pd-reason');
   if (note) note.textContent = p.reason || '';
+
+  // --- Override button: reflects live server state, so a page reload or a
+  // second browser tab always shows the real latch, never a stale guess. ---
+  _pdOverrideOn = !!p.override;
+  const btn = document.getElementById('pd-override-btn');
+  if (btn) {
+    if (_pdOverrideOn) {
+      btn.textContent = 'Re-block Regime';
+      btn.className = 'btn btn-sm btn-green';
+    } else {
+      btn.textContent = 'Unblock Regime Today';
+      btn.className = 'btn btn-sm btn-amber';
+    }
+    // Pointless when the regime already permits buying.
+    const moot = !!p.regime_ok && !_pdOverrideOn;
+    btn.disabled = moot;
+    btn.style.opacity = moot ? '0.45' : '1';
+    btn.style.cursor = moot ? 'not-allowed' : 'pointer';
+  }
+  const onote = document.getElementById('pd-override-note');
+  if (onote) {
+    if (_pdOverrideOn) {
+      onote.textContent = 'Override armed for ' + (p.override_date || 'today')
+        + ' — clears automatically at the ET date roll. The 10:30-11:30 ET '
+        + 'hour still applies; only the regime veto is waived.';
+      onote.style.color = 'var(--blue)';
+    } else if (p.regime_ok) {
+      onote.textContent = 'Regime already permits buying — override not needed.';
+      onote.style.color = 'var(--fg3)';
+    } else {
+      onote.textContent = 'Regime is blocking entries today. Unblocking lets the '
+        + 'robot buy the top-ranked names during the deployment hour, today only.';
+      onote.style.color = 'var(--fg3)';
+    }
+  }
+}
+
+// Mirrors the server latch; set on every snapshot by renderPrimaryDeployment.
+let _pdOverrideOn = false;
+
+function togglePdOverride() {
+  if (_pdOverrideOn) {
+    send({type: 'pd_regime_override', on: false});
+    return;
+  }
+  const el = document.getElementById('pd-regime');
+  const reg = el ? el.textContent.trim() : 'the current';
+  const ok = confirm(
+    'Unblock the regime gate for TODAY only?\n\n'
+    + 'Today\'s regime (' + reg + ') is blocking new entries. Unblocking lets '
+    + 'the robot place buys on the top-ranked names during the 10:30-11:30 ET '
+    + 'primary deployment window.\n\n'
+    + 'The buy window itself is NOT moved, and stops, the governor and the '
+    + 'blacklist all stay in force. The override clears itself at the ET date '
+    + 'roll.\n\nProceed?');
+  if (ok) send({type: 'pd_regime_override', on: true});
 }
 
 function renderRegime(r) {

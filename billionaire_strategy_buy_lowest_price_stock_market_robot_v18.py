@@ -10638,6 +10638,46 @@ _regime_latch_lock = threading.Lock()
 # {'YYYY-MM-DD': [regime_string, ...]} -- samples taken 10:00-10:30 ET.
 _regime_samples = {}
 
+# ---------------- Operator regime override (one day only) ----------------
+# Dashboard button: "UNBLOCK REGIME TODAY". Lets the operator overrule a
+# bear/panic/unmeasured verdict for the CURRENT ET DATE ONLY, so the robot
+# may buy the top-ranked names during the primary deployment hour on a day
+# the regime gate would otherwise sit out.
+#
+# Deliberately narrow. The override ONLY waives the regime test. It does NOT
+# move the 10:30-11:30 ET window, and it does not touch the governor, the
+# blacklist, the exposure caps, the per-symbol brains or any exit path. It is
+# keyed by ET date, so it evaporates on its own at the date roll -- there is
+# no way to leave it armed overnight by forgetting about it.
+_pd_regime_override = {}                       # {'YYYY-MM-DD': True}
+_pd_regime_override_lock = threading.Lock()
+
+
+def set_primary_deployment_override(on=True, now_et=None):
+    """Arm or clear the regime override for today's ET date.
+
+    Returns (active: bool, date_str: str).
+    """
+    now_et = now_et or datetime.now(eastern)
+    today = now_et.date().isoformat()
+    with _pd_regime_override_lock:
+        if on:
+            _pd_regime_override[today] = True
+        else:
+            _pd_regime_override.pop(today, None)
+        # Drop any stale dates so the dict cannot grow across sessions.
+        for stale in [d for d in _pd_regime_override if d != today]:
+            del _pd_regime_override[stale]
+        return bool(_pd_regime_override.get(today)), today
+
+
+def is_primary_deployment_override_active(now_et=None):
+    """True only if the override was armed for the CURRENT ET date."""
+    now_et = now_et or datetime.now(eastern)
+    today = now_et.date().isoformat()
+    with _pd_regime_override_lock:
+        return bool(_pd_regime_override.get(today))
+
 
 def _regime_take_sample(today, now_et):
     """Read the regime once and record it as a 10:00-10:30 ET sample.
@@ -10772,11 +10812,25 @@ def primary_deployment_status(now_et=None):
                          t.strftime('%H:%M')))
         return {'open': False, 'time_open': False, 'regime_ok': regime_ok,
                 'regime': regime, 'state': state, 'reason': reason,
-                'window': _w}
+                'window': _w,
+                'override': is_primary_deployment_override_active(now_et)}
+
+    overridden = is_primary_deployment_override_active(now_et)
 
     if not regime_ok:
+        if overridden:
+            # Operator pressed UNBLOCK REGIME TODAY. The hour still governs;
+            # only the regime veto is waived, and only for this ET date.
+            return {'open': True, 'time_open': True, 'regime_ok': False,
+                    'regime': regime, 'state': 'override', 'window': _w,
+                    'override': True,
+                    'reason': ("primary deployment window %s OPEN BY OPERATOR "
+                               "OVERRIDE -- regime is %s, normally blocked; "
+                               "override expires at today's ET date roll"
+                               % (_w, (regime or 'unmeasured').upper()))}
         return {'open': False, 'time_open': True, 'regime_ok': False,
                 'regime': regime, 'state': 'blocked', 'window': _w,
+                'override': False,
                 'reason': ("primary deployment window %s is open but the "
                            "regime is %s -- buys allowed only in %s"
                            % (_w, (regime or 'unmeasured').upper(),
@@ -10785,6 +10839,7 @@ def primary_deployment_status(now_et=None):
 
     return {'open': True, 'time_open': True, 'regime_ok': True,
             'regime': regime, 'state': 'open', 'window': _w,
+            'override': bool(overridden),
             'reason': ("primary deployment window %s OPEN -- %s regime"
                        % (_w, regime.upper()))}
 
@@ -10820,6 +10875,23 @@ def check_regime_buy_window(now_et=None):
 
     window_end = REGIME_BUY_WINDOW_END_ET.get(regime)
     if window_end is None:
+        # Untradable regime (bear / panic / unknown). The operator may waive
+        # this for the current ET date with the dashboard's UNBLOCK REGIME
+        # TODAY button; when armed, the primary deployment hour becomes the
+        # window and nothing else about the gate changes.
+        if is_primary_deployment_override_active(now_et):
+            if PRIMARY_DEPLOYMENT_START_ET <= t < PRIMARY_DEPLOYMENT_END_ET:
+                return True, ("%s regime UNBLOCKED BY OPERATOR for today — "
+                              "buying in the primary deployment window %s-%s ET"
+                              % (regime.upper(),
+                                 PRIMARY_DEPLOYMENT_START_ET.strftime('%H:%M'),
+                                 PRIMARY_DEPLOYMENT_END_ET.strftime('%H:%M')))
+            return False, ("%s regime unblocked by operator, but the primary "
+                           "deployment window %s-%s ET is not running (now %s ET)"
+                           % (regime.upper(),
+                              PRIMARY_DEPLOYMENT_START_ET.strftime('%H:%M'),
+                              PRIMARY_DEPLOYMENT_END_ET.strftime('%H:%M'),
+                              t.strftime('%H:%M')))
         return False, ("%s — regime is %s"
                        % (REGIME_NOT_PROFITABLE_MSG, regime.upper()))
 
@@ -24561,6 +24633,33 @@ class DashboardWSEngine:
                 BLACKLIST._save()
             floor_post('USER', 'instruction', "all 72h auto-blacklist entries cleared")
 
+        # ---- Primary deployment regime override (today only) ----
+        elif cmd == 'pd_regime_override':
+            on = bool(msg.get('on', True))
+            try:
+                active, day = set_primary_deployment_override(on)
+                _reg = None
+                try:
+                    _reg = get_latched_session_regime()
+                except Exception:
+                    pass
+                _reg_txt = (_reg or 'unmeasured').upper()
+                if active:
+                    note = (f"regime override ARMED for {day}: {_reg_txt} regime "
+                            f"unblocked — buys allowed in the "
+                            f"{PRIMARY_DEPLOYMENT_START_ET.strftime('%H:%M')}-"
+                            f"{PRIMARY_DEPLOYMENT_END_ET.strftime('%H:%M')} ET "
+                            f"primary deployment window today only")
+                    logging.warning("[dashboard] %s", note)
+                else:
+                    note = (f"regime override CLEARED for {day} — "
+                            f"{_reg_txt} regime gate back in force")
+                    logging.info("[dashboard] %s", note)
+                print(f"[dashboard] {note}")
+                floor_post('USER', 'instruction', note)
+            except Exception as e:
+                logging.error("[dashboard] pd_regime_override failed: %s", e)
+
         # ---- Brain Room — Trading Floor commands ----
         elif cmd == 'floor_clear':
             floor_clear()
@@ -25124,6 +25223,8 @@ class DashboardWSEngine:
                     REGIME_ASSESS_ET.strftime('%H:%M')),
                 'universe_count': len(_scan_syms),
                 'buy_top_n': _top_n,
+                'override': bool(_pd.get('override')),
+                'override_date': datetime.now(eastern).date().isoformat(),
             }
         except Exception as e:
             state['primary_deployment'] = {'error': str(e)}
