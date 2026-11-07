@@ -51,7 +51,7 @@ Every buy order has to survive a committee. A timing brain scores it, a day-trad
 
 | | |
 |---|---|
-| OS | Ubuntu Linux 24.04 (any modern Linux works) |
+| OS | Ubuntu Linux 26.04 (any modern Linux works) |
 | Python | Anaconda Python 3 (`base` environment), 3.11 – 3.13 |
 | RAM | 16 GB recommended (TensorFlow pretraining is the peak) |
 | Disk | 20 GB free for models, caches, and the SQLite trade database |
