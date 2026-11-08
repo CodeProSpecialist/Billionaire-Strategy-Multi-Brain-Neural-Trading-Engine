@@ -1,4 +1,4 @@
-# 🤖 Billionaire Strategy Multi-Brain Neural Trading Engine
+# 🤖 Billionaire Strategy Multi-Brain Neural Trading Engine — Version 25
 
 > **A single-file Python day-trading robot for Alpaca, with a frozen-foundation neural timing brain, a fleet of specialist brains that must agree before capital moves, and a real-time operations dashboard.**
 
@@ -6,7 +6,7 @@ Every buy order has to survive a committee. A timing brain scores it, a day-trad
 
 ![Dashboard overview](docs/images/00-dashboard-overview.png)
 
-<sub>*Screenshots throughout this README are captured from the real `alpaca_dashboard_v18.html` running against a simulated market feed. The layout, indicators, and computed values are genuine; the account balances, symbols, and P&L are sample data, not a trading record.*</sub>
+<sub>*Screenshots throughout this README are captured from the real `alpaca_dashboard_v25.html` running against a simulated market feed. The layout, indicators, and computed values are genuine; the account balances, symbols, and P&L are sample data, not a trading record.*</sub>
 
 <sub>[See the entire dashboard in one tall image →](docs/images/01-dashboard-full.png)</sub>
 
@@ -148,20 +148,20 @@ Put these in `~/.bashrc` so they survive a reboot. **Start on paper.** Switch th
 
 ```bash
 conda activate base
-python3 billionaire_strategy_buy_lowest_price_stock_market_robot_v18.py
+python3 billionaire_strategy_buy_lowest_price_stock_market_robot_v25.py
 ```
 
 Then open the dashboard — it is a plain file, no web server needed:
 
 ```bash
-xdg-open alpaca_dashboard_v18.html
+xdg-open alpaca_dashboard_v25.html
 ```
 
 If the dashboard is on another machine, or you changed the port:
 
 ```
-alpaca_dashboard_v18.html?ws=ws://192.168.1.40:8765
-alpaca_dashboard_v18.html?wsPort=8765&token=YOUR_TOKEN
+alpaca_dashboard_v25.html?ws=ws://192.168.1.40:8765
+alpaca_dashboard_v25.html?wsPort=8765&token=YOUR_TOKEN
 ```
 
 **First run takes a while.** The brains pretrain before the first trade: Brain B (risk) and Brain D (portfolio) on 20,000 synthetic snapshots each, then the timing brain's head on real historical sequences, then Brain F (bullish picker). On CPU this is tens of minutes. It happens once — the models are cached on disk and reloaded after that.
@@ -559,7 +559,7 @@ The constants live near the top of the `.py` file; the dashboard-editable ones a
 
 ## 🔧 Troubleshooting
 
-**Dashboard shows "disconnected"** — the bot is not running, or it is not listening where the page is looking. Check the terminal for the dashboard startup line, then try `alpaca_dashboard_v18.html?ws=ws://127.0.0.1:8765`. If you set `BOT_DASHBOARD_TOKEN`, the page needs `&token=` too (code 4401 means the token is wrong or missing).
+**Dashboard shows "disconnected"** — the bot is not running, or it is not listening where the page is looking. Check the terminal for the dashboard startup line, then try `alpaca_dashboard_v25.html?ws=ws://127.0.0.1:8765`. If you set `BOT_DASHBOARD_TOKEN`, the page needs `&token=` too (code 4401 means the token is wrong or missing).
 
 **`ImportError: libta_lib.so.0`** — the C library is not installed or `ldconfig` was not run. Redo step 1.
 

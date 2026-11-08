@@ -1,4 +1,4 @@
-"""Billionaire Strategy Stock Market Trading Robot, Version 17.
+"""Billionaire Strategy Stock Market Trading Robot, Version 25.
 
 Startup ordering:
   1. Bootstrap dependencies (this block) -- runs pip list, silently
@@ -13161,7 +13161,7 @@ def check_pretrade_backtest_gate(symbol):
 
 
 # ---------------- Dashboard chart feed: 1m candles + CE + MACD + RSI -------
-# Powers the per-position chart tile on alpaca_dashboard_v18.html. One entry
+# Powers the per-position chart tile on alpaca_dashboard_v25.html. One entry
 # per OWNED position, shaped to mirror the operator's TradingView layout:
 # candlesticks with the Chandelier Exit step-line and its Buy/Sell labels on
 # top, the MACD(12,26,9) histogram underneath, and the live RSI(14) value.
@@ -15991,7 +15991,7 @@ def stop_if_stock_market_is_closed():
         *********************************************************************************
         ************ Billionaire Buying Strategy Version ********************************
         *********************************************************************************
-            2026 Edition of the Billionaire Strategy Stock Market Trading Robot, Version 17
+            2026 Edition of the Billionaire Strategy Stock Market Trading Robot, Version 25
                         https://github.com/CodeProSpecialist
                Margin Account Rules Engine - No PDT Round-Trip Limits
         ''')
@@ -30570,7 +30570,7 @@ def main():
             print("*****************************************************")
             print("******** Billionaire Buying Strategy Version ********")
             print("*****************************************************")
-            print("2026 Edition of the Billionaire Strategy Stock Market Trading Robot, Version 17")
+            print("2026 Edition of the Billionaire Strategy Stock Market Trading Robot, Version 25")
             print("by https://github.com/CodeProSpecialist")
             print("------------------------------------------------------------------------------------")
             print(f" {now_str} Cash Balance: ${st['cash']:,.2f}")
